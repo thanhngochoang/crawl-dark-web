@@ -1,0 +1,10 @@
+version: "3.8"
+services:
+  puppeteer:
+    build: .
+    container_name: puppeteer-ts
+    ports:
+      - "3000:3000" # chỉ cần nếu app có HTTP server
+    restart: always
+    environment:
+      - CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium

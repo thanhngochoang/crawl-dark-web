@@ -1,0 +1,20 @@
+{
+  "name": "puppeteer-ts",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "npx ts-node src/index.ts",
+    "dev": "ts-node src/index.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "puppeteer": "^24.16.0",
+    "puppeteer-core": "^24.16.0",
+    "tsc-esm-fix": "^3.1.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.2.1",
+    "@types/puppeteer": "^5.4.7",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.2"
+  }
+}
