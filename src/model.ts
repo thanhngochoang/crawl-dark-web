@@ -2,6 +2,8 @@ export interface EscortData {
   URL: string;
   Gia: string;
   SoDienThoai: string;
+  NgayTao?: string | null;
+  LuotXem?: string | null;
   Pass: string;
   NamSinh: string;
   ChieuCao: string;

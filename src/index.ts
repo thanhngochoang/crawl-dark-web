@@ -1,5 +1,6 @@
 import puppeteer from "puppeteer";
-import { nextPage, readAll, readCsv, sleep } from "./util";
+import { csvMapping, nextPage, readAll, readCsv, sleep } from "./util";
+import { saveToCSV } from "./csv.util";
 
 
 async function main(url: string): Promise<void> {
@@ -7,6 +8,7 @@ async function main(url: string): Promise<void> {
     const browser = await puppeteer.launch({ headless: true, devtools: debug });
     const page = await browser.newPage();
     let pageIndex = 1;
+    const csvData = [];
     while (true) {
 
         await page.goto(url + nextPage(pageIndex++), { waitUntil: "networkidle2" });
@@ -20,9 +22,12 @@ async function main(url: string): Promise<void> {
 
         const uniqueLinks = [...new Set(links)];
         const results = await readAll(browser, 1000, uniqueLinks);
+        csvData.push(...results);
         pageIndex++;
         if (!(results.length > 1)) break;
     }
+    
+    saveToCSV("export", csvMapping, csvData);
     await browser.close();
 }
 

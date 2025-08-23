@@ -43,6 +43,7 @@ export const scrapeEscortPage = async function (link: string, browser: Browser):
         SoDienThoai: "",
         Pass: "",
         NamSinh: "",
+        NgayTao: "",
         ChieuCao: "",
         CanNang: "",
         XuatXu: "",
@@ -56,7 +57,7 @@ export const scrapeEscortPage = async function (link: string, browser: Browser):
 
       const attrLabels = Array.from(document.querySelectorAll(".attributes .col-md-4, .attributes .col-4"));
       const attrValues = Array.from(document.querySelectorAll(".attributes .col-md-8, .attributes .col-8"));
-
+      const elementCreate = document.querySelectorAll(".main-content-escort")[0].nextElementSibling?.querySelectorAll('.content-left .card-sub .float-right');
       for (let i = 0; i < attrLabels.length; i++) {
 
         const label = normalize(clean(attrLabels[i].textContent));
@@ -88,7 +89,10 @@ export const scrapeEscortPage = async function (link: string, browser: Browser):
           result.DiaChi = value;
         }
       }
-
+      const elementView = (elementCreate ? elementCreate[1].textContent : "")?.trim().split(' ').filter(x => !!x)
+     
+      result.NgayTao = elementView && elementView?.length > 2 ? elementView?.[2] : "";
+      result.LuotXem = elementView && elementView?.length > 0 ? elementView?.[0] : "";
       // 3. Extract services
       const servicesSection = document.querySelector(".services");
       if (servicesSection) {
@@ -110,6 +114,7 @@ export const scrapeEscortPage = async function (link: string, browser: Browser):
       Pass: "",
       NamSinh: "",
       ChieuCao: "",
+      NgayTao: "",
       CanNang: "",
       XuatXu: "",
       SoDo3Vong: "",
@@ -123,7 +128,7 @@ export const scrapeEscortPage = async function (link: string, browser: Browser):
   }
 }
 
-const csvMapping: CsvConfig<EscortData> = {
+export const csvMapping: CsvConfig<EscortData> = {
   URL: { header: "URL" },
   Gia: { header: "Giá" },
   SoDienThoai: {
@@ -131,6 +136,8 @@ const csvMapping: CsvConfig<EscortData> = {
     formatter: (value) => " " + String(value ?? "") + " "
   },
   NamSinh: { header: "Năm Sinh" },
+  NgayTao: { header: "Ngày Tạo" },
+  LuotXem: { header: "Lượt Xem" },
   ChieuCao: { header: "Chiều Cao" },
   CanNang: { header: "Cân Nặng" },
   XuatXu: { header: "Xuất xứ" },
