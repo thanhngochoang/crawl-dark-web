@@ -90,7 +90,7 @@ export const scrapeEscortPage = async function (link: string, browser: Browser):
         }
       }
       const elementView = (elementCreate ? elementCreate[1].textContent : "")?.trim().split(' ').filter(x => !!x)
-     
+
       result.NgayTao = elementView && elementView?.length > 2 ? elementView?.[2] : "";
       result.LuotXem = elementView && elementView?.length > 0 ? elementView?.[0] : "";
       // 3. Extract services
@@ -133,7 +133,7 @@ export const csvMapping: CsvConfig<EscortData> = {
   Gia: { header: "Giá" },
   SoDienThoai: {
     header: "Số điện thoại",
-    formatter: (value) => " " + String(value ?? "") + " "
+    formatter: (value) => " '" + String(value ?? "") + " "
   },
   NamSinh: { header: "Năm Sinh" },
   NgayTao: { header: "Ngày Tạo" },
