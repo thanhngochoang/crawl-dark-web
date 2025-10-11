@@ -161,7 +161,8 @@ export const readAll = async (browser: Browser, batchSize: number, uniqueLinks: 
     batchSize--;
     console.log(`Scraping [${uniqueLinks.indexOf(link) + 1}:${uniqueLinks.length}] ${link}`);
     const data = await scrapeEscortPage(link, browser);
-    await appendToCSV('log', csvMapping, [data],"1cbCBWczW85kFIHKmDGAYwdNj1WPGpkDlTt_jRB8s0zQ", getSheetName());
+    const spreadsheetId = process.env.SPREADSHEET_ID || "1cbCBWczW85kFIHKmDGAYwdNj1WPGpkDlTt_jRB8s0zQ";
+    await appendToCSV('log', csvMapping, [data], spreadsheetId, getSheetName());
     data.SoDienThoai && results.push(data);
     await sleep(1000);
   }

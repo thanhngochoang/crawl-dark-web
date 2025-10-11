@@ -27,7 +27,8 @@ async function main(url: string): Promise<void> {
         if (!(results.length > 1)) break;
     }
     
-    await saveToCSV("export", csvMapping, csvData, "1cbCBWczW85kFIHKmDGAYwdNj1WPGpkDlTt_jRB8s0zQ", getSheetName() + '-all');
+    const spreadsheetId = process.env.SPREADSHEET_ID || "1cbCBWczW85kFIHKmDGAYwdNj1WPGpkDlTt_jRB8s0zQ";
+    await saveToCSV("export", csvMapping, csvData, spreadsheetId, getSheetName() + '-all');
     await browser.close();
 }
 

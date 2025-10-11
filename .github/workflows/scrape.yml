@@ -23,3 +23,5 @@ jobs:
 
     - name: Run scraper
       run: npm start
+      env:
+        SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
