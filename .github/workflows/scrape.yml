@@ -16,7 +16,10 @@ jobs:
         node-version: '20.x'
 
     - name: Create credentials file
-      run: echo "${{ secrets.GOOGLE_CREDENTIALS_JSON }}" > credentials.json
+      run: |
+        cat <<EOF > credentials.json
+        ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+        EOF
 
     - name: Install dependencies
       run: npm install
