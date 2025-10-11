@@ -146,11 +146,11 @@ export const csvMapping: CsvConfig<EscortData> = {
   NamSinh: { header: "Năm Sinh" },
   NgayTao: { header: "Ngày Tạo" },
   LuotXem: { header: "Lượt Xem" },
-  ChieuCao: { header: "Chiều Cao" },
+  KhuVuc: { header: "Khu Vực" },
   CanNang: { header: "Cân Nặng" },
+  ChieuCao: { header: "Chiều Cao" },
   XuatXu: { header: "Xuất xứ" },
   SoDo3Vong: { header: "Số đồ 3 vòng" },
-  KhuVuc: { header: "Khu Vực" },
   DiaChi: { header: "Địa chỉ" }
 };
 
