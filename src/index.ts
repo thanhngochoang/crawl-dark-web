@@ -5,7 +5,7 @@ import { saveToCSV } from "./csv.util";
 
 async function main(url: string): Promise<void> {
     const debug = false;
-    const browser = await puppeteer.launch({ headless: true, devtools: debug });
+    const browser = await puppeteer.launch({ headless: true, devtools: debug, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
     const page = await browser.newPage();
     let pageIndex = 1;
     const csvData = [];
