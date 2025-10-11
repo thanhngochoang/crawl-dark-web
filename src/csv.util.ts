@@ -6,6 +6,8 @@ import { JWT } from 'google-auth-library';
 
 // Google Sheets setup
 const credentials = JSON.parse(fs.readFileSync('credentials.json', 'utf8'));
+export const spreadsheetId = process.env.SPREADSHEET_ID || "1cbCBWczW85kFIHKmDGAYwdNj1WPGpkDlTt_jRB8s0zQ";
+
 const auth = new JWT({
   email: credentials.client_email,
   key: credentials.private_key,
@@ -13,7 +15,7 @@ const auth = new JWT({
 });
 const sheets = google.sheets({ version: 'v4', auth });
 
-async function ensureSheetExists(spreadsheetId: string, sheetName: string) {
+export async function ensureSheetExists(sheetName: string, headers?: string[]) {
   try {
     const response = await sheets.spreadsheets.get({
       spreadsheetId,
@@ -35,6 +37,15 @@ async function ensureSheetExists(spreadsheetId: string, sheetName: string) {
         },
       });
       console.log(`✅ Created sheet: ${sheetName}`);
+      if (headers && headers.length > 0) {
+        await sheets.spreadsheets.values.update({
+          spreadsheetId,
+          range: `'${sheetName}'!A1`,
+          valueInputOption: 'RAW',
+          requestBody: { values: [headers] },
+        });
+        console.log(`✅ Added headers to sheet: ${sheetName}`);
+      }
     }
   } catch (error) {
     console.error('Error ensuring sheet exists:', error);
@@ -73,7 +84,7 @@ function getSheetValues<T>(config: CsvConfig<T>, results: T[]) {
     return values;
 };
 
-export async function saveToCSV<T>(prefix: string, config: CsvConfig<T>, results: T[], spreadsheetId?: string, sheetName?: string) {
+export async function saveToCSV<T>(prefix: string, config: CsvConfig<T>, results: T[], sheetName?: string) {
     const { header, mapRow } = getCSVConfig(config);
     const csvRows = [
         header.join(","),
@@ -86,7 +97,7 @@ export async function saveToCSV<T>(prefix: string, config: CsvConfig<T>, results
     console.log(`✅ Saved CSV: ${outPath}`);
 
     if (spreadsheetId && sheetName) {
-        await ensureSheetExists(spreadsheetId, sheetName);
+        await ensureSheetExists(sheetName);
         const values = getSheetValues(config, results);
         try {
             // Clear the sheet
@@ -107,7 +118,7 @@ export async function saveToCSV<T>(prefix: string, config: CsvConfig<T>, results
         }
     }
 };
-export async function appendToCSV<T>(prefix: string, config: CsvConfig<T>, rows: T[], spreadsheetId?: string, sheetName?: string) {
+export async function appendToCSV<T>(prefix: string, config: CsvConfig<T>, rows: T[],  sheetName?: string) {
     const { header, mapRow } = getCSVConfig(config);
     const outPath = path.resolve(`${prefix}_escort_data_${new Date().toISOString().slice(0, 10)}.csv`);
 
@@ -123,13 +134,28 @@ export async function appendToCSV<T>(prefix: string, config: CsvConfig<T>, rows:
     console.log(`✅ Appended ${rows.length} row(s) to CSV: ${outPath}`);
 
     if (spreadsheetId && sheetName) {
-        await ensureSheetExists(spreadsheetId, sheetName);
         const keys = Object.keys(config) as (keyof T)[];
-        const values = rows.map(row => keys.map(k => {
+        const header = keys.map((k) => config[k]?.header);
+        let values: any[] = rows.map(row => keys.map(k => {
             const formatter = config[k]?.formatter;
             const rawValue = row[k];
             return formatter ? formatter(rawValue) : String(rawValue ?? "");
         }));
+
+        // Check if sheet is empty, if so, prepend headers
+        try {
+            const response = await sheets.spreadsheets.values.get({
+                spreadsheetId,
+                range: `'${sheetName}'!A1`,
+            });
+            if (!response.data.values || response.data.values.length === 0) {
+                values = [header, ...values];
+            }
+        } catch (error) {
+            // If error (e.g., sheet doesn't exist), assume empty and add headers
+            values = [header, ...values];
+        }
+
         try {
             await sheets.spreadsheets.values.append({
                 spreadsheetId,

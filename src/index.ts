@@ -1,6 +1,6 @@
 import puppeteer from "puppeteer";
 import { csvMapping, nextPage, readAll, readCsv, sleep, getSheetName } from "./util";
-import { saveToCSV } from "./csv.util";
+import { saveToCSV, ensureSheetExists } from "./csv.util";
 
 
 async function main(url: string): Promise<void> {
@@ -9,12 +9,18 @@ async function main(url: string): Promise<void> {
     const page = await browser.newPage();
     let pageIndex = 1;
     const csvData = [];
+
+    // Ensure the sheet exists before starting
+    const keys = Object.keys(csvMapping) as (keyof typeof csvMapping)[];
+    const headers = keys.map((k) => csvMapping[k]?.header).filter((h): h is string => h !== undefined);
+    const sheetName = getSheetName() + '-all';
+    await ensureSheetExists(sheetName, headers);
     while (true) {
 
         await page.goto(url + nextPage(pageIndex++), { waitUntil: "networkidle2" });
         await page.waitForSelector("div.escort-list a", { timeout: 20000 });
         //   await autoScroll(page);
-        await sleep(1000); // thay thế page.waitForTimeout(1000)
+        await sleep(1000); 
 
         const links: string[] = await page.$$eval("div.escort-list > a", (as) =>
             as.map((a) => (a as HTMLAnchorElement).href).filter(Boolean)
@@ -27,8 +33,7 @@ async function main(url: string): Promise<void> {
         if (!(results.length > 1)) break;
     }
     
-    const spreadsheetId = process.env.SPREADSHEET_ID || "1cbCBWczW85kFIHKmDGAYwdNj1WPGpkDlTt_jRB8s0zQ";
-    await saveToCSV("export", csvMapping, csvData, spreadsheetId, getSheetName() + '-all');
+    await saveToCSV("export", csvMapping, csvData, sheetName );
     await browser.close();
 }
 

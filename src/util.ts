@@ -1,6 +1,6 @@
 import { Page, Browser } from "puppeteer";
 import { CsvConfig, EscortData } from "./model";
-import { appendToCSV, readCsvToObject } from "./csv.util";
+import { appendToCSV, ensureSheetExists, readCsvToObject } from "./csv.util";
 
 export const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -156,13 +156,15 @@ export const csvMapping: CsvConfig<EscortData> = {
 
 export const readAll = async (browser: Browser, batchSize: number, uniqueLinks: string[]) => {
   const results: EscortData[] = [];
+  const sheetName = getSheetName();
+  await ensureSheetExists(sheetName);
+
   for (const link of uniqueLinks) {
     if (batchSize <= 0) break;
     batchSize--;
     console.log(`Scraping [${uniqueLinks.indexOf(link) + 1}:${uniqueLinks.length}] ${link}`);
     const data = await scrapeEscortPage(link, browser);
-    const spreadsheetId = process.env.SPREADSHEET_ID || "1cbCBWczW85kFIHKmDGAYwdNj1WPGpkDlTt_jRB8s0zQ";
-    await appendToCSV('log', csvMapping, [data], spreadsheetId, getSheetName());
+    await appendToCSV('log', csvMapping, [data], sheetName);
     data.SoDienThoai && results.push(data);
     await sleep(1000);
   }
