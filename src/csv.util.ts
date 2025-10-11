@@ -1,6 +1,45 @@
 import { CsvConfig, EscortData } from "./model";
 import fs from "fs";
 import path from "path";
+import { google } from 'googleapis';
+import { JWT } from 'google-auth-library';
+
+// Google Sheets setup
+const credentials = JSON.parse(fs.readFileSync('credentials.json', 'utf8'));
+const auth = new JWT({
+  email: credentials.client_email,
+  key: credentials.private_key,
+  scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+});
+const sheets = google.sheets({ version: 'v4', auth });
+
+async function ensureSheetExists(spreadsheetId: string, sheetName: string) {
+  try {
+    const response = await sheets.spreadsheets.get({
+      spreadsheetId,
+    });
+    const sheetExists = response.data.sheets?.some(sheet => sheet.properties?.title === sheetName);
+    if (!sheetExists) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          requests: [
+            {
+              addSheet: {
+                properties: {
+                  title: sheetName,
+                },
+              },
+            },
+          ],
+        },
+      });
+      console.log(`✅ Created sheet: ${sheetName}`);
+    }
+  } catch (error) {
+    console.error('Error ensuring sheet exists:', error);
+  }
+}
 
 // Hàm tạo header & mapRow từ config
 function getCSVConfig<T>(mappingConfig: CsvConfig<T>) {
@@ -19,7 +58,22 @@ function getCSVConfig<T>(mappingConfig: CsvConfig<T>) {
     return { header, mapRow };
 };
 
-export function saveToCSV<T>(prefix: string, config: CsvConfig<T>, results: T[]) {
+// Hàm tạo values cho Google Sheets
+function getSheetValues<T>(config: CsvConfig<T>, results: T[]) {
+    const keys = Object.keys(config) as (keyof T)[];
+    const header = keys.map((k) => config[k]?.header);
+    const values = [
+        header,
+        ...results.map(row => keys.map(k => {
+            const formatter = config[k]?.formatter;
+            const rawValue = row[k];
+            return formatter ? formatter(rawValue) : String(rawValue ?? "");
+        }))
+    ];
+    return values;
+};
+
+export async function saveToCSV<T>(prefix: string, config: CsvConfig<T>, results: T[], spreadsheetId?: string, sheetName?: string) {
     const { header, mapRow } = getCSVConfig(config);
     const csvRows = [
         header.join(","),
@@ -30,8 +84,30 @@ export function saveToCSV<T>(prefix: string, config: CsvConfig<T>, results: T[])
     fs.writeFileSync(outPath, "\uFEFF" + csvRows.join("\n"), "utf8");
 
     console.log(`✅ Saved CSV: ${outPath}`);
+
+    if (spreadsheetId && sheetName) {
+        await ensureSheetExists(spreadsheetId, sheetName);
+        const values = getSheetValues(config, results);
+        try {
+            // Clear the sheet
+            await sheets.spreadsheets.values.clear({
+                spreadsheetId,
+                range: `'${sheetName}'`,
+            });
+            // Update with new data
+            await sheets.spreadsheets.values.update({
+                spreadsheetId,
+                range: `'${sheetName}'!A1`,
+                valueInputOption: 'RAW',
+                requestBody: { values },
+            });
+            console.log(`✅ Saved to Google Sheets: ${spreadsheetId}, sheet: ${sheetName}`);
+        } catch (error) {
+            console.error('Error saving to Google Sheets:', error);
+        }
+    }
 };
-export function appendToCSV<T>(prefix: string, config: CsvConfig<T>, rows: T[]) {
+export async function appendToCSV<T>(prefix: string, config: CsvConfig<T>, rows: T[], spreadsheetId?: string, sheetName?: string) {
     const { header, mapRow } = getCSVConfig(config);
     const outPath = path.resolve(`${prefix}_escort_data_${new Date().toISOString().slice(0, 10)}.csv`);
 
@@ -45,6 +121,27 @@ export function appendToCSV<T>(prefix: string, config: CsvConfig<T>, rows: T[]) 
     }
 
     console.log(`✅ Appended ${rows.length} row(s) to CSV: ${outPath}`);
+
+    if (spreadsheetId && sheetName) {
+        await ensureSheetExists(spreadsheetId, sheetName);
+        const keys = Object.keys(config) as (keyof T)[];
+        const values = rows.map(row => keys.map(k => {
+            const formatter = config[k]?.formatter;
+            const rawValue = row[k];
+            return formatter ? formatter(rawValue) : String(rawValue ?? "");
+        }));
+        try {
+            await sheets.spreadsheets.values.append({
+                spreadsheetId,
+                range: `'${sheetName}'!A:A`,
+                valueInputOption: 'RAW',
+                requestBody: { values },
+            });
+            console.log(`✅ Appended ${rows.length} row(s) to Google Sheets: ${spreadsheetId}, sheet: ${sheetName}`);
+        } catch (error) {
+            console.error('Error appending to Google Sheets:', error);
+        }
+    }
 };
 function columnToObject<T>(config: CsvConfig<T>): Record<string, keyof T> {
     if (!config) return {};
@@ -82,3 +179,4 @@ export function readCsvToObjects<T>(filePath: string, config: CsvConfig<T>): Par
         return obj;
     });
 }
+//https://docs.google.com/spreadsheets/d/1cbCBWczW85kFIHKmDGAYwdNj1WPGpkDlTt_jRB8s0zQ/edit?gid=0#gid=0

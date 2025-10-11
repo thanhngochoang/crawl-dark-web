@@ -1,5 +1,5 @@
 import puppeteer from "puppeteer";
-import { csvMapping, nextPage, readAll, readCsv, sleep } from "./util";
+import { csvMapping, nextPage, readAll, readCsv, sleep, getSheetName } from "./util";
 import { saveToCSV } from "./csv.util";
 
 
@@ -27,7 +27,7 @@ async function main(url: string): Promise<void> {
         if (!(results.length > 1)) break;
     }
     
-    saveToCSV("export", csvMapping, csvData);
+    await saveToCSV("export", csvMapping, csvData, "1cbCBWczW85kFIHKmDGAYwdNj1WPGpkDlTt_jRB8s0zQ", getSheetName() + '-all');
     await browser.close();
 }
 

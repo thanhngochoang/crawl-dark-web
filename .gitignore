@@ -4,3 +4,4 @@ dist/
 *.csv
 package-lock.json
 yarn.lock
+credentials.json

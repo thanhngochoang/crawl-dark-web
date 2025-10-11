@@ -4,6 +4,14 @@ import { appendToCSV, readCsvToObject } from "./csv.util";
 
 export const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+export function getSheetName(): string {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const day = String(today.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 export async function autoScroll(page: Page): Promise<void> {
   await page.evaluate(async () => {
     await new Promise<void>((resolve) => {
@@ -153,7 +161,7 @@ export const readAll = async (browser: Browser, batchSize: number, uniqueLinks: 
     batchSize--;
     console.log(`Scraping [${uniqueLinks.indexOf(link) + 1}:${uniqueLinks.length}] ${link}`);
     const data = await scrapeEscortPage(link, browser);
-    appendToCSV('log', csvMapping, [data]);
+    await appendToCSV('log', csvMapping, [data],"1cbCBWczW85kFIHKmDGAYwdNj1WPGpkDlTt_jRB8s0zQ", getSheetName());
     data.SoDienThoai && results.push(data);
     await sleep(1000);
   }
