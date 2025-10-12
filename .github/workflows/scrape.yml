@@ -35,7 +35,7 @@ jobs:
       run: npm install
 
     - name: Run scraper
-      run: npm start
+      run: npm start ${{ secrets.BASE_URL }}
       env:
         SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
         BASE_URL: ${{ secrets.BASE_URL }}
