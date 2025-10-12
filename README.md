@@ -99,6 +99,54 @@ This will:
 - CSV export with UTF-8 BOM for Excel compatibility.
 - Error handling and retries.
 
+## Google Apps Script Integration
+
+The `apps-script.gs` file contains Google Apps Script code that can be used in your Google Sheet for additional automation.
+
+### Setup Telegram Integration
+
+1. Create a Telegram bot:
+   - Message `@BotFather` on Telegram
+   - Use `/newbot` command and follow instructions
+   - Save the bot token
+
+2. Get your chat ID:
+   - Message your bot
+   - Visit `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates`
+   - Find your chat ID in the response
+
+3. In Google Apps Script:
+   - Open your sheet's script editor
+   - Update the configuration constants with your values
+   - Deploy the script as a web app: **Publish > Deploy as web app**
+   - Set "Execute the app as:" to "Me"
+   - Set "Who has access to the app:" to "Anyone, even anonymous"
+   - Copy the deployed URL and update `DEPLOYED_URL` in the script
+   - Run `setupTelegramWebhook()` from the menu to activate the webhook
+   - Save the script
+
+4. Authorize the script to send external requests (for Telegram API)
+
+### Apps Script Features
+
+- **Data Filtering**: Filter data by location, price, or age
+- **Telegram Notifications**: Send filtered results or daily summaries to Telegram
+- **Telegram Commands**: Receive and process filter commands via Telegram bot
+- **Read-Only Operations**: All operations read data without modifying the spreadsheet
+- **Custom Menu**: Access read-only features from the Sheets UI
+
+### Telegram Commands
+
+Send commands to your bot to filter and retrieve data in real-time:
+
+- `/filter location <location>` - Filter by location (e.g., `/filter location Sài Gòn`)
+- `/filter price <operator><amount>` - Filter by price (e.g., `/filter price <500000`)
+- `/filter age <min>-<max>` - Filter by age range (e.g., `/filter age 18-25`)
+- `/summary` - Get daily summary
+- `/help` - Show available commands
+
+Commands are processed instantly via webhook when you send messages to the bot.
+
 ## License
 
 This project is private and for personal use only.
