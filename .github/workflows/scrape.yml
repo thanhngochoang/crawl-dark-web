@@ -38,3 +38,4 @@ jobs:
       run: npm start
       env:
         SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+        BASE_URL: ${{ secrets.BASE_URL }}

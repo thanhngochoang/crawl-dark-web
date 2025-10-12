@@ -70,10 +70,12 @@ If you want to run the scraper via GitHub Actions:
 
 ```bash
 npm start
+# Or specify a custom URL:
+npm start "https://example.com/gai-goi/sai-gon?a=20"
 ```
 
 This will:
-- Scrape data from the configured website.
+- Scrape data from the specified website (defaults to `https://gaigu41.tv/gai-goi/sai-gon?a=20` if none provided).
 - Save data to CSV files in the root directory.
 - Append data to Google Sheets (creating sheets as needed with today's date format YYYY-MM-DD).
 
