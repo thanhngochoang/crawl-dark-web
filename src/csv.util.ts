@@ -239,10 +239,10 @@ export async function updateMasterFromDaily<T extends EscortData>(masterSheetNam
 
         // Read existing URLs from master sheet
         const masterData = await getSheetData(masterSheetName, config);
-        const existingUrls = new Set(masterData.map(row => row['URL' as keyof T]).filter(Boolean));
+        const existingUrls = new Set(masterData.map(row => row.URL).filter(Boolean));
 
         // Filter new records not in master
-        const newRecords = dailyData.filter(row => row['URL' as keyof T] && !existingUrls.has(row.));
+        const newRecords = dailyData.filter(row => row.URL && !existingUrls.has(row.URL));
 
         if (newRecords.length === 0) {
             console.log(`No new records to add from  to ${masterSheetName}`);
