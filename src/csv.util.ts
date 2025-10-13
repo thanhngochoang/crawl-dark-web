@@ -9,47 +9,47 @@ const credentials = JSON.parse(fs.readFileSync('credentials.json', 'utf8'));
 export const spreadsheetId = process.env.SPREADSHEET_ID || "1cbCBWczW85kFIHKmDGAYwdNj1WPGpkDlTt_jRB8s0zQ";
 
 const auth = new JWT({
-  email: credentials.client_email,
-  key: credentials.private_key,
-  scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    email: credentials.client_email,
+    key: credentials.private_key,
+    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 const sheets = google.sheets({ version: 'v4', auth });
 
 export async function ensureSheetExists(sheetName: string, headers?: string[]) {
-  try {
-    const response = await sheets.spreadsheets.get({
-      spreadsheetId,
-    });
-    const sheetExists = response.data.sheets?.some(sheet => sheet.properties?.title === sheetName);
-    if (!sheetExists) {
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId,
-        requestBody: {
-          requests: [
-            {
-              addSheet: {
-                properties: {
-                  title: sheetName,
-                },
-              },
-            },
-          ],
-        },
-      });
-      console.log(`✅ Created sheet: ${sheetName}`);
-      if (headers && headers.length > 0) {
-        await sheets.spreadsheets.values.update({
-          spreadsheetId,
-          range: `'${sheetName}'!A1`,
-          valueInputOption: 'RAW',
-          requestBody: { values: [headers] },
+    try {
+        const response = await sheets.spreadsheets.get({
+            spreadsheetId,
         });
-        console.log(`✅ Added headers to sheet: ${sheetName}`);
-      }
+        const sheetExists = response.data.sheets?.some(sheet => sheet.properties?.title === sheetName);
+        if (!sheetExists) {
+            await sheets.spreadsheets.batchUpdate({
+                spreadsheetId,
+                requestBody: {
+                    requests: [
+                        {
+                            addSheet: {
+                                properties: {
+                                    title: sheetName,
+                                },
+                            },
+                        },
+                    ],
+                },
+            });
+            console.log(`✅ Created sheet: ${sheetName}`);
+            if (headers && headers.length > 0) {
+                await sheets.spreadsheets.values.update({
+                    spreadsheetId,
+                    range: `'${sheetName}'!A1`,
+                    valueInputOption: 'RAW',
+                    requestBody: { values: [headers] },
+                });
+                console.log(`✅ Added headers to sheet: ${sheetName}`);
+            }
+        }
+    } catch (error) {
+        console.error('Error ensuring sheet exists:', error);
     }
-  } catch (error) {
-    console.error('Error ensuring sheet exists:', error);
-  }
 }
 
 // Hàm tạo header & mapRow từ config
@@ -118,7 +118,7 @@ export async function saveToCSV<T>(prefix: string, config: CsvConfig<T>, results
         }
     }
 };
-export async function appendToCSV<T>(prefix: string, config: CsvConfig<T>, rows: T[],  sheetName?: string) {
+export async function appendToCSV<T>(prefix: string, config: CsvConfig<T>, rows: T[], sheetName?: string) {
     const { header, mapRow } = getCSVConfig(config);
     const outPath = path.resolve(`${prefix}_escort_data_${new Date().toISOString().slice(0, 10)}.csv`);
 
@@ -205,4 +205,70 @@ export function readCsvToObjects<T>(filePath: string, config: CsvConfig<T>): Par
         return obj;
     });
 }
-//https://docs.google.com/spreadsheets/d/1cbCBWczW85kFIHKmDGAYwdNj1WPGpkDlTt_jRB8s0zQ/edit?gid=0#gid=0
+
+// Function to read data from a Google Sheet
+export async function getSheetData<T>(sheetName: string, config: CsvConfig<T>): Promise<Partial<Record<keyof T, string>>[]> {
+    try {
+        const response = await sheets.spreadsheets.values.get({
+            spreadsheetId,
+            range: `'${sheetName}'!A:Z`, // Adjust range as needed
+        });
+        const values = response.data.values;
+        if (!values || values.length === 0) return [];
+
+        const headerMap = columnToObject(config);
+        const headers = values[0].map(x => headerMap[x]);
+        const rows = values.slice(1);
+
+        return rows.map(row => {
+            const obj: Partial<Record<keyof T, string>> = {};
+            headers.forEach((h, i) => {
+                obj[h] = row[i] ?? "";
+            });
+            return obj;
+        });
+    } catch (error) {
+        console.error('Error reading from Google Sheets:', error);
+        return [];
+    }
+}
+
+// Function to update master AllData sheet from daily sheet, adding only new records by URL
+export async function updateMasterFromDaily<T extends EscortData>(masterSheetName: string, dailyData: T[], config: CsvConfig<T>) {
+    try {
+
+        // Read existing URLs from master sheet
+        const masterData = await getSheetData(masterSheetName, config);
+        const existingUrls = new Set(masterData.map(row => row['URL' as keyof T]).filter(Boolean));
+
+        // Filter new records not in master
+        const newRecords = dailyData.filter(row => row['URL' as keyof T] && !existingUrls.has(row.));
+
+        if (newRecords.length === 0) {
+            console.log(`No new records to add from  to ${masterSheetName}`);
+            return;
+        }
+
+        // Prepare values for appending
+        const keys = Object.keys(config) as (keyof T)[];
+        const values = newRecords.map(row =>
+            keys.map(k => {
+                const formatter = config[k]?.formatter;
+                const rawValue = row[k];
+                return formatter ? formatter(rawValue) : String(rawValue ?? "");
+            })
+        );
+
+        // Append to master sheet
+        await sheets.spreadsheets.values.append({
+            spreadsheetId,
+            range: `'${masterSheetName}'!A:A`,
+            valueInputOption: 'RAW',
+            requestBody: { values },
+        });
+
+        console.log(`✅ Added ${newRecords.length} new record(s) to ${masterSheetName}`);
+    } catch (error) {
+        console.error('Error updating master from daily:', error);
+    }
+}

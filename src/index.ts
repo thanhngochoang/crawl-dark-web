@@ -1,6 +1,6 @@
 import puppeteer from "puppeteer";
 import { csvMapping, nextPage, readAll, readCsv, sleep, getSheetName } from "./util";
-import { saveToCSV, ensureSheetExists } from "./csv.util";
+import { saveToCSV, ensureSheetExists, updateMasterFromDaily } from "./csv.util";
 
 export const base_Url = process.env.BASE_URL
 async function main(baseUrl?: string): Promise<void> {
@@ -17,7 +17,7 @@ async function main(baseUrl?: string): Promise<void> {
     // Ensure the sheet exists before starting
     const keys = Object.keys(csvMapping) as (keyof typeof csvMapping)[];
     const headers = keys.map((k) => csvMapping[k]?.header).filter((h): h is string => h !== undefined);
-    const sheetName = getSheetName();
+    const sheetName = "AllData"
     await ensureSheetExists(sheetName, headers);
     while (true) {
 
@@ -33,11 +33,12 @@ async function main(baseUrl?: string): Promise<void> {
         const uniqueLinks = [...new Set(links)];
         const results = await readAll(browser, 1000, uniqueLinks);
         csvData.push(...results);
+        updateMasterFromDaily(sheetName, csvData, csvMapping)
         pageIndex++;
         if (!(results.length > 1)) break;
     }
 
-    await saveToCSV("export", csvMapping, csvData, sheetName);
+    await saveToCSV("export", csvMapping, csvData, sheetName + "-draff");
     await browser.close();
 }
 
