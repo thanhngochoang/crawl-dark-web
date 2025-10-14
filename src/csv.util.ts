@@ -205,70 +205,78 @@ export function readCsvToObjects<T>(filePath: string, config: CsvConfig<T>): Par
         return obj;
     });
 }
-
-// Function to read data from a Google Sheet
-export async function getSheetData<T>(sheetName: string, config: CsvConfig<T>): Promise<Partial<Record<keyof T, string>>[]> {
-    try {
-        const response = await sheets.spreadsheets.values.get({
-            spreadsheetId,
-            range: `'${sheetName}'!A:Z`, // Adjust range as needed
-        });
-        const values = response.data.values;
-        if (!values || values.length === 0) return [];
-
-        const headerMap = columnToObject(config);
-        const headers = values[0].map(x => headerMap[x]);
-        const rows = values.slice(1);
-
-        return rows.map(row => {
-            const obj: Partial<Record<keyof T, string>> = {};
-            headers.forEach((h, i) => {
-                obj[h] = row[i] ?? "";
-            });
-            return obj;
-        });
-    } catch (error) {
-        console.error('Error reading from Google Sheets:', error);
-        return [];
-    }
+// Helper function to get all data from a sheet
+async function getSheetData(sheetName: string): Promise<string[][]> {
+    const response = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: `'${sheetName}'`,
+    });
+    return response.data.values || [];
 }
 
-// Function to update master AllData sheet from daily sheet, adding only new records by URL
-export async function updateMasterFromDaily<T extends EscortData>(masterSheetName: string, dailyData: T[], config: CsvConfig<T>) {
+// Function to update master sheet from daily sheet, adding only new records based on URL uniqueness
+export async function updateMasterFromDaily(dailySheetName: string, masterSheetName: string = 'AllData') {
     try {
+        // Ensure master sheet exists
+        await ensureSheetExists(masterSheetName);
 
-        // Read existing URLs from master sheet
-        const masterData = await getSheetData(masterSheetName, config);
-        const existingUrls = new Set(masterData.map(row => row.URL).filter(Boolean));
+        // Get data from both sheets
+        const dailyData = await getSheetData(dailySheetName);
+        const masterData = await getSheetData(masterSheetName);
 
-        // Filter new records not in master
-        const newRecords = dailyData.filter(row => row.URL && !existingUrls.has(row.URL));
-
-        if (newRecords.length === 0) {
-            console.log(`No new records to add from  to ${masterSheetName}`);
+        if (dailyData.length === 0) {
+            console.log(`No data in daily sheet: ${dailySheetName}`);
             return;
         }
 
-        // Prepare values for appending
-        const keys = Object.keys(config) as (keyof T)[];
-        const values = newRecords.map(row =>
-            keys.map(k => {
-                const formatter = config[k]?.formatter;
-                const rawValue = row[k];
-                return formatter ? formatter(rawValue) : String(rawValue ?? "");
-            })
+        // If master is empty, copy all daily data
+        if (masterData.length === 0) {
+            await sheets.spreadsheets.values.update({
+                spreadsheetId,
+                range: `'${masterSheetName}'!A1`,
+                valueInputOption: 'RAW',
+                requestBody: { values: dailyData },
+            });
+            console.log(`✅ Copied all data from ${dailySheetName} to ${masterSheetName}`);
+            return;
+        }
+
+        // Assume first row is headers
+        const headers = dailyData[0];
+        const urlIndex = headers.findIndex(h => h.toLowerCase() === 'url');
+        if (urlIndex === -1) {
+            console.error('URL column not found in daily sheet headers');
+            return;
+        }
+
+        // Create set of existing URLs from master sheet (skip header)
+        const masterUrls = new Set(
+            masterData.slice(1).map(row => row[urlIndex]).filter(url => url && url.trim())
         );
 
-        // Append to master sheet
+        // Filter daily records where URL doesn't exist in master
+        const newRecords = dailyData.slice(1).filter(row => {
+            const url = row[urlIndex];
+            return url && url.trim() && !masterUrls.has(url);
+        });
+
+        if (newRecords.length === 0) {
+            console.log(`No new records to add from ${dailySheetName} to ${masterSheetName}`);
+            return;
+        }
+
+        // Append new records to master sheet
         await sheets.spreadsheets.values.append({
             spreadsheetId,
             range: `'${masterSheetName}'!A:A`,
             valueInputOption: 'RAW',
-            requestBody: { values },
+            requestBody: { values: newRecords },
         });
 
-        console.log(`✅ Added ${newRecords.length} new record(s) to ${masterSheetName}`);
+        console.log(`✅ Added ${newRecords.length} new record(s) from ${dailySheetName} to ${masterSheetName}`);
     } catch (error) {
         console.error('Error updating master from daily:', error);
     }
 }
+
+//https://docs.google.com/spreadsheets/d/1cbCBWczW85kFIHKmDGAYwdNj1WPGpkDlTt_jRB8s0zQ/edit?gid=0#gid=0
