@@ -13,7 +13,7 @@ function formatDataAsTable(data, startIndex = 0) {
         const row = [
             String(startIndex + idx + 1).padEnd(2),
             (item["Khu Vực"] || "-").padEnd(18),
-            (item["Số điện thoại"] || "-").padEnd(13),
+            `[${(item["Số điện thoại"] || "-").padEnd(13)}](tel:${item["Số điện thoại"]})`.padEnd(12),
             (item["Giá"] || "-").toString().padEnd(10),
             (item["Năm Sinh"] || "-").toString().padEnd(9),
             formatDate(item["Ngày Tạo"])
@@ -23,6 +23,26 @@ function formatDataAsTable(data, startIndex = 0) {
 
     table += "```";
     return table;
+}
+/**
+ * Tạo tin nhắn dạng bảng cho 1 khu vực
+ */
+function buildGroupMessage(khuVuc, items) {
+    let message = `🏙️ *Khu vực:* ${khuVuc}\n`;
+    message += "```";
+    message += "\nGiá\t\tSĐT\t\tNăm sinh\tNgày tạo\n";
+    message += "------------------------------------------\n";
+
+    for (const item of items) {
+        const gia = item["Giá"] || "N/A";
+        const sdt = `[${(item["Số điện thoại"] || "-").padEnd(13)}](tel:${item["Số điện thoại"]})`.padEnd(12);
+        const namSinh = item["Năm Sinh"] || "N/A";
+        const ngayTao = formatDate(item["Ngày Tạo"]);
+        message += `${gia}\t${sdt}\t${namSinh}\t${ngayTao}\n`;
+    }
+
+    message += "```";
+    return message;
 }
 /**
  * Định dạng ngày về dạng dd/MM/yyyy
@@ -48,17 +68,14 @@ function formatDate(dateValue) {
 function sendResultData(data) {
     const filter = filterValidPhoneData(data);
     if (!filter || filter.length === 0) {
-        return sendTelegramMessage("❌ Không có dữ liệu phù hợp.");
+        return sendTelegramMessage("Không có dữ liệu phù hợp");
     }
 
-    sendTelegramMessage("🍽 Ra món phù hợp cho quý dị:\n");
+    const groupedData = groupByKey(filter, "Khu Vực", "Không xác định");
 
-    const batchSize = 3;
-    for (let i = 0; i < filter.length; i += batchSize) {
-        const batch = filter.slice(i, i + batchSize);
-        const message = formatDataAsTable(batch, i);
+    for (const [khuVuc, items] of Object.entries(groupedData)) {
+        const message = buildGroupMessage(khuVuc, items);
         sendTelegramMessage(message);
-        break;
     }
 }
 
@@ -69,6 +86,7 @@ function sendTelegramMessage(message) {
         chat_id: TELEGRAM_CHAT_ID,
         text: message,
         parse_mode: "HTML",
+        disable_web_page_preview: true
     };
 
     const options = {

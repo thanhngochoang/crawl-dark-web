@@ -17,7 +17,7 @@ function doPost(e) {
         const rule = makeTheRule(text);
         const data = getSheetData(SHEET_NAME);
         const result = data.filter(item => applyFilters(item, JSON.parse(rule)));
-        sendTelegramMessage(`Ra món phù hợp cho quý dị: \n ${JSON.stringify(result)}`);
+        sendResultData(result);
         sendTelegramMessage("Thỏa mãn chưa?");
         return
 
