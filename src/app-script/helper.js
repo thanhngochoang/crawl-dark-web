@@ -54,7 +54,7 @@ Yêu cầu:
 - Nếu câu có so sánh như “lớn hơn”, “bé hơn”, “cao hơn”, “nhiều hơn” → dùng các toán tử \`>\`, \`<\`, \`>=\`, \`<=\`.
 - Nếu câu có “bằng”, “là”, “giống như” → dùng \`==\`.
 - Nếu câu có “khác”, “không phải” → dùng \`!=\`.
-- Nếu câu có “chứa”, “bao gồm”, “có chữ” → dùng \`contains\`.
+- Nếu câu có “chứa”, "khu vực", "ở", "khu", “bao gồm”, “có chữ” → dùng \`contains\`.
 - Nếu câu có “trong danh sách”, “thuộc nhóm”, “một trong” → dùng \`in\`.
 - Luôn giữ giá trị ("value") ở dạng gốc, không dịch hoặc viết tắt.
 - Nếu có khoảng giá trị (“từ 100 đến 500”) → chuyển thành nhóm '"logic": "and"' gồm hai điều kiện '>= ' và '<= '.
@@ -106,6 +106,7 @@ Yêu cầu:
 Bây giờ, hãy chuyển câu tiếng Việt sau thành JSON rule đúng theo format ở trên:
 
 ${query}
+Phản hồi của bạn phải là một đối tượng JSON HỢP LỆ và KHÔNG được bao bọc trong bất kỳ ký hiệu markdown code block nào (ví dụ: KHÔNG dùng markdown json);
 `;
 
     return callGemini(prompt);
