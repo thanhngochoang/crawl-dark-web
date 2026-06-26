@@ -7,8 +7,11 @@
     "build": "tsc"
   },
   "dependencies": {
+    "@types/jsdom": "^27.0.0",
+    "axios": "^1.16.0",
     "google-auth-library": "^10.4.0",
     "googleapis": "^162.0.0",
+    "jsdom": "^27.1.0",
     "puppeteer": "^24.16.0",
     "puppeteer-core": "^24.16.0",
     "tsc-esm-fix": "^3.1.2"

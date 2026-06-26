@@ -6,7 +6,7 @@ import { JWT } from 'google-auth-library';
 
 // Google Sheets setup
 const credentials = JSON.parse(fs.readFileSync('credentials.json', 'utf8'));
-export const spreadsheetId = process.env.SPREADSHEET_ID || "1cbCBWczW85kFIHKmDGAYwdNj1WPGpkDlTt_jRB8s0zQ";
+export const spreadsheetId = process.env.SPREADSHEET_ID
 
 const auth = new JWT({
     email: credentials.client_email,

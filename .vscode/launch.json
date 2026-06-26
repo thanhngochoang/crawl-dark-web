@@ -6,9 +6,17 @@
       "request": "launch",
       "name": "Run index.ts",
       "program": "${workspaceFolder}/src/index.ts",
-      "runtimeArgs": ["-r", "ts-node/register"],
-      "skipFiles": ["<node_internals>/**"],
-      "cwd": "${workspaceFolder}"
+      "runtimeArgs": [
+        "-r",
+        "ts-node/register"
+      ],
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
+      "cwd": "${workspaceFolder}",
+      "args": [
+        "https://gaigu1.net/gai-goi/sai-gon?a=20"
+      ]
     }
   ]
 }
