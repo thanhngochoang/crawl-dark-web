@@ -1,5 +1,5 @@
 import "dotenv/config";
-import puppeteer from "puppeteer";
+import { chromium } from "playwright";
 import { csvMapping, nextPage, readAll, readCsv, sleep, getSheetName } from "./util";
 import { saveToCSV, ensureSheetExists } from "./csv.util";
 
@@ -12,9 +12,9 @@ async function main(urlArg?: string): Promise<void> {
     }
 
     console.log("Running scrap from url: ", baseUrl);
-    const debug = true;
-    const browser = await puppeteer.launch({ headless: true, devtools: debug, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
-    const page = await browser.newPage();
+    const browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+    const context = await browser.newContext();
+    const page = await context.newPage();
 
     let pageIndex = 1;
     const csvData = [];
@@ -26,7 +26,7 @@ async function main(urlArg?: string): Promise<void> {
     await ensureSheetExists(sheetName, headers);
     while (true) {
 
-        await page.goto(baseUrl + nextPage(pageIndex), { waitUntil: "networkidle2" });
+        await page.goto(baseUrl + nextPage(pageIndex), { waitUntil: "domcontentloaded" });
         await page.waitForSelector("body", { timeout: 10000 });
         try {
             await page.waitForSelector("div.product-grid a, div.escort-list a, .product-grid a, .escort-list a", { timeout: 10000 });
@@ -42,7 +42,7 @@ async function main(urlArg?: string): Promise<void> {
 
         const uniqueLinks = [...new Set(links)];
         console.log(`Found ${uniqueLinks.length} detail links on page ${pageIndex}`);
-        const results = await readAll(browser, 1000, uniqueLinks);
+        const results = await readAll(context, 1000, uniqueLinks);
         csvData.push(...results);
         pageIndex++;
         if (!(results.length >= 1)) break;

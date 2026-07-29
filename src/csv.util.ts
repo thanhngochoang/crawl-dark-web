@@ -5,22 +5,47 @@ import { google } from 'googleapis';
 import { JWT } from 'google-auth-library';
 
 // Google Sheets setup
-const credentials = JSON.parse(fs.readFileSync('credentials.json', 'utf8'));
-export const spreadsheetId = process.env.SPREADSHEET_ID
+export const spreadsheetId = process.env.SPREADSHEET_ID;
+export const isUploadToSheets = process.env.UPLOAD_TO_SHEETS !== 'false' && process.env.UPLOAD_TO_SHEETS !== '0';
 
-const auth = new JWT({
-    email: credentials.client_email,
-    key: credentials.private_key,
-    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-});
-const sheets = google.sheets({ version: 'v4', auth });
+let sheetsClient: ReturnType<typeof google.sheets> | null = null;
+let sheetsInitialized = false;
+
+function getSheetsClient() {
+    if (!isUploadToSheets || !spreadsheetId) return null;
+    if (sheetsInitialized) return sheetsClient;
+
+    sheetsInitialized = true;
+
+    if (!fs.existsSync('credentials.json')) {
+        console.warn('⚠️ credentials.json not found, skipping Google Sheets integration.');
+        return null;
+    }
+
+    try {
+        const credentials = JSON.parse(fs.readFileSync('credentials.json', 'utf8'));
+        const auth = new JWT({
+            email: credentials.client_email,
+            key: credentials.private_key,
+            scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+        });
+        sheetsClient = google.sheets({ version: 'v4', auth });
+        return sheetsClient;
+    } catch (err) {
+        console.error('Error initializing Google Sheets client:', (err as Error).message);
+        return null;
+    }
+}
 
 export async function ensureSheetExists(sheetName: string, headers?: string[]) {
+    const sheets = getSheetsClient();
+    if (!sheets || !spreadsheetId) return;
+
     try {
         const response = await sheets.spreadsheets.get({
             spreadsheetId,
         });
-        const sheetExists = response.data.sheets?.some(sheet => sheet.properties?.title === sheetName);
+        const sheetExists = response.data.sheets?.some((sheet: any) => sheet.properties?.title === sheetName);
         if (!sheetExists) {
             await sheets.spreadsheets.batchUpdate({
                 spreadsheetId,
@@ -96,7 +121,8 @@ export async function saveToCSV<T>(prefix: string, config: CsvConfig<T>, results
 
     console.log(`✅ Saved CSV: ${outPath}`);
 
-    if (spreadsheetId && sheetName) {
+    const sheets = getSheetsClient();
+    if (sheets && spreadsheetId && sheetName) {
         await ensureSheetExists(sheetName);
         const values = getSheetValues(config, results);
         try {
@@ -118,6 +144,7 @@ export async function saveToCSV<T>(prefix: string, config: CsvConfig<T>, results
         }
     }
 };
+
 export async function appendToCSV<T>(prefix: string, config: CsvConfig<T>, rows: T[], sheetName?: string) {
     const { header, mapRow } = getCSVConfig(config);
     const outPath = path.resolve(`${prefix}_escort_data_${new Date().toISOString().slice(0, 10)}.csv`);
@@ -133,7 +160,8 @@ export async function appendToCSV<T>(prefix: string, config: CsvConfig<T>, rows:
 
     console.log(`✅ Appended ${rows.length} row(s) to CSV: ${outPath}`);
 
-    if (spreadsheetId && sheetName) {
+    const sheets = getSheetsClient();
+    if (sheets && spreadsheetId && sheetName) {
         const keys = Object.keys(config) as (keyof T)[];
         const header = keys.map((k) => config[k]?.header);
         let values: any[] = rows.map(row => keys.map(k => {
@@ -169,6 +197,7 @@ export async function appendToCSV<T>(prefix: string, config: CsvConfig<T>, rows:
         }
     }
 };
+
 function columnToObject<T>(config: CsvConfig<T>): Record<string, keyof T> {
     if (!config) return {};
     return Object.keys(config).reduce((acc, key) => {
@@ -179,13 +208,13 @@ function columnToObject<T>(config: CsvConfig<T>): Record<string, keyof T> {
         };
     }, {} as Record<string, keyof T>);
 }
+
 export function readCsvToObject<T>(config: CsvConfig<T>): Partial<Record<keyof T, string>>[] {
     return readCsvToObjects<T>(path.resolve("log_escort_data_2025-08-16.csv"), config);
 }
+
 export function readCsvToObjects<T>(filePath: string, config: CsvConfig<T>): Partial<Record<keyof T, string>>[] {
-
     const content = fs.readFileSync(filePath, "utf8");
-
     const cleaned = content.replace(/^\uFEFF/, "").trim();
 
     if (!cleaned) return [];
@@ -205,8 +234,11 @@ export function readCsvToObjects<T>(filePath: string, config: CsvConfig<T>): Par
         return obj;
     });
 }
+
 // Helper function to get all data from a sheet
 async function getSheetData(sheetName: string): Promise<string[][]> {
+    const sheets = getSheetsClient();
+    if (!sheets || !spreadsheetId) return [];
     const response = await sheets.spreadsheets.values.get({
         spreadsheetId,
         range: `'${sheetName}'`,
@@ -216,6 +248,9 @@ async function getSheetData(sheetName: string): Promise<string[][]> {
 
 // Function to update master sheet from daily sheet, adding only new records based on URL uniqueness
 export async function updateMasterFromDaily(dailySheetName: string, masterSheetName: string = 'AllData') {
+    const sheets = getSheetsClient();
+    if (!sheets || !spreadsheetId) return;
+
     try {
         // Ensure master sheet exists
         await ensureSheetExists(masterSheetName);
@@ -278,5 +313,3 @@ export async function updateMasterFromDaily(dailySheetName: string, masterSheetN
         console.error('Error updating master from daily:', error);
     }
 }
-
-//https://docs.google.com/spreadsheets/d/1cbCBWczW85kFIHKmDGAYwdNj1WPGpkDlTt_jRB8s0zQ/edit?gid=0#gid=0

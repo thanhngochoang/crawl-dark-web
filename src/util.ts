@@ -1,4 +1,4 @@
-import { Page, Browser } from "puppeteer";
+import { Page, BrowserContext, Browser } from "playwright";
 import { CsvConfig, EscortData } from "./model";
 import { appendToCSV, ensureSheetExists, readCsvToObject } from "./csv.util";
 
@@ -29,12 +29,13 @@ export async function autoScroll(page: Page): Promise<void> {
   });
 }
 
-export const scrapeEscortPage = async function (link: string, browser: Browser): Promise<EscortData> {
-  const page = await browser.newPage();
+export const scrapeEscortPage = async function (link: string, browser: BrowserContext | Browser): Promise<EscortData> {
+  const context = 'newContext' in browser ? await browser.newContext() : browser;
+  const page = await context.newPage();
 
   try {
     try {
-      await page.goto(link, { waitUntil: "networkidle2", timeout: 30000 });
+      await page.goto(link, { waitUntil: "domcontentloaded", timeout: 30000 });
     } catch (e) {
       console.warn("Navigation timeout or network error, proceeding with available DOM...", (e as Error).message);
     }
@@ -223,7 +224,7 @@ export const csvMapping: CsvConfig<EscortData> = {
   DiaChi: { header: "Địa chỉ" }
 };
 
-export const readAll = async (browser: Browser, batchSize: number, uniqueLinks: string[]) => {
+export const readAll = async (browser: BrowserContext | Browser, batchSize: number, uniqueLinks: string[]) => {
   const results: EscortData[] = [];
   const sheetName = getSheetName();
   await ensureSheetExists(sheetName);
