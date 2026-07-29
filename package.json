@@ -1,8 +1,9 @@
 {
-  "name": "puppeteer-ts",
+  "name": "Crawl data from dark web",
   "version": "1.0.0",
   "scripts": {
     "start": "npx ts-node src/index.ts",
+    "test": "UPLOAD_TO_SHEETS=false npx ts-node src/index.ts",
     "dev": "ts-node src/index.ts",
     "build": "tsc"
   },
