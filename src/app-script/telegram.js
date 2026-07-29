@@ -1,59 +1,22 @@
 /**
- * Hàm định dạng dữ liệu thành bảng Markdown để gửi Telegram
- * @param {Array} data - Danh sách dữ liệu (object)
- * @param {number} startIndex - Số thứ tự bắt đầu (dùng khi chia batch)
- * @returns {string} - Chuỗi dạng bảng Markdown
+ * Escape HTML special characters to prevent Telegram HTML parser errors
  */
-function formatDataAsTable(data, startIndex = 0) {
-    let table = "```\n";
-    table += `#  | Khu Vực           | SĐT           | Giá        | Năm Sinh | Ngày Tạo\n`;
-    table += `---|--------------------|---------------|------------|-----------|------------\n`;
-
-    data.forEach((item, idx) => {
-        const row = [
-            String(startIndex + idx + 1).padEnd(2),
-            (item["Khu Vực"] || "-").padEnd(18),
-            `[${(item["Số điện thoại"] || "-").padEnd(13)}](tel:${item["Số điện thoại"]})`.padEnd(12),
-            (item["Giá"] || "-").toString().padEnd(10),
-            (item["Năm Sinh"] || "-").toString().padEnd(9),
-            formatDate(item["Ngày Tạo"])
-        ];
-        table += `${row.join(" | ")}\n`;
-    });
-
-    table += "```";
-    return table;
+function escapeHtml(text) {
+    if (text === null || text === undefined) return "";
+    return String(text)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
 }
-/**
- * Tạo tin nhắn dạng bảng cho 1 khu vực
- */
-function buildGroupMessage(khuVuc, items) {
-    let message = `🏙️ *Khu vực:* ${khuVuc}\n`;
-    message += "```";
-    message += "\nGiá\t\tSĐT\t\tNăm sinh\tNgày tạo\n";
-    message += "------------------------------------------\n";
 
-    for (const item of items) {
-        const gia = item["Giá"] || "N/A";
-        const sdt = `[${(item["Số điện thoại"] || "-").padEnd(13)}](tel:${item["Số điện thoại"]})`.padEnd(12);
-        const namSinh = item["Năm Sinh"] || "N/A";
-        const ngayTao = formatDate(item["Ngày Tạo"]);
-        message += `${gia}\t${sdt}\t${namSinh}\t${ngayTao}\n`;
-    }
-
-    message += "```";
-    return message;
-}
 /**
  * Định dạng ngày về dạng dd/MM/yyyy
- * @param {string|Date} dateValue - Chuỗi hoặc đối tượng Date
- * @returns {string} - Chuỗi ngày định dạng dd/MM/yyyy hoặc "-" nếu không hợp lệ
  */
 function formatDate(dateValue) {
     if (!dateValue) return "-";
 
     const date = new Date(dateValue);
-    if (isNaN(date)) return "-"; // kiểm tra giá trị hợp lệ
+    if (isNaN(date.getTime())) return "-";
 
     const day = String(date.getDate()).padStart(2, "0");
     const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -61,23 +24,52 @@ function formatDate(dateValue) {
 
     return `${day}/${month}/${year}`;
 }
+
 /**
- * Gửi dữ liệu kết quả tới Telegram, chia batch để tránh tin quá dài
- * @param {Array} data - Danh sách dữ liệu kết quả
+ * Tạo tin nhắn dạng bảng HTML cho 1 batch dữ liệu của 1 khu vực
+ */
+function buildGroupMessageChunk(khuVuc, items, isFirstBatch = true) {
+    let message = "";
+    if (isFirstBatch) {
+        message += `🏙️ <b>Khu vực:</b> ${escapeHtml(khuVuc)}\n`;
+    }
+    message += "<pre>";
+    message += "Giá     | SĐT           | NS   | Ngày tạo\n";
+    message += "------------------------------------------\n";
+
+    for (const item of items) {
+        const gia = String(item["Giá"] || "-").padEnd(7);
+        const sdt = String(item["Số điện thoại"] || "-").padEnd(13);
+        const namSinh = String(item["Năm Sinh"] || "-").padEnd(4);
+        const ngayTao = formatDate(item["Ngày Tạo"]).padEnd(10);
+        message += `${gia} | ${sdt} | ${namSinh} | ${ngayTao}\n`;
+    }
+
+    message += "</pre>";
+    return message;
+}
+
+/**
+ * Gửi dữ liệu kết quả tới Telegram, chia batch nhỏ để tránh tin quá dài (>4096 chars)
  */
 function sendResultData(data) {
     const filter = filterValidPhoneData(data);
     if (!filter || filter.length === 0) {
-        return sendTelegramMessage("Không có dữ liệu phù hợp");
+        return sendTelegramMessage("❌ Không có dữ liệu phù hợp.");
     }
 
     const groupedData = groupByKey(filter, "Khu Vực", "Không xác định");
 
     for (const [khuVuc, items] of Object.entries(groupedData)) {
-        const message = buildGroupMessage(khuVuc, items);
-        sendTelegramMessage(message);
+        const BATCH_SIZE = 15;
+        for (let i = 0; i < items.length; i += BATCH_SIZE) {
+            const batch = items.slice(i, i + BATCH_SIZE);
+            const message = buildGroupMessageChunk(khuVuc, batch, i === 0);
+            sendTelegramMessage(message);
+        }
     }
 }
+
 
 // Function to send message to Telegram
 function sendTelegramMessage(message) {

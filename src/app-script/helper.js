@@ -114,7 +114,7 @@ Phản hồi của bạn phải là một đối tượng JSON HỢP LỆ và KH
 
 function callGemini(prompt) {
     const apiKey = getGeminiApiKey();
-    const modelName = 'gemini-2.5-flash'; // Recommended
+    const modelName = 'gemini-2.5-flash';
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
     const payload = {
         contents: [
@@ -140,7 +140,7 @@ function callGemini(prompt) {
             const errorMessage = `API Error: ${result.error.message}`;
             Logger.log(errorMessage);
             sendTelegramMessage("🤖 Gemini Error: " + errorMessage);
-            return;
+            return null;
         }
 
         // 2. Check for candidates (successful generation)
@@ -149,22 +149,29 @@ function callGemini(prompt) {
 
             // 3. Check for blocked content
             if (candidate.finishReason === 'SAFETY') {
-                sendTelegramMessage("🚫 The response was blocked due to safety settings. Please try a different query.");
-                return;
+                sendTelegramMessage("🚫 Câu hỏi bị chặn do thiết lập an toàn. Vui lòng thử lại với câu hỏi khác.");
+                return null;
             }
 
-            // 4. Extract the text
-            const aiResponse = candidate.content.parts[0].text;
-            sendTelegramMessage(aiResponse);
+            // 4. Extract the text & clean Markdown code blocks
+            let aiResponse = candidate.content.parts[0].text || "";
+            aiResponse = aiResponse
+                .replace(/```json\s*/gi, "")
+                .replace(/```\s*/gi, "")
+                .trim();
+
+            return aiResponse;
 
         } else {
-            // Catch all for unexpected empty responses
-            sendTelegramMessage("🤖 Gemini Error: Received an empty or malformed response.");
+            Logger.log("Gemini Error: Received an empty response.");
+            sendTelegramMessage("🤖 Gemini Error: Phản hồi trống hoặc không hợp lệ.");
+            return null;
         }
 
     } catch (error) {
-        // Catch network or parsing errors
-        sendTelegramMessage("Error querying Gemini: " + error.toString());
         Logger.log("Error querying Gemini: " + error.toString());
+        sendTelegramMessage("⚠️ Lỗi khi kết nối với Gemini: " + error.toString());
+        return null;
     }
 }
+

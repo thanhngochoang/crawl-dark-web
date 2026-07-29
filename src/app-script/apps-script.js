@@ -1,5 +1,5 @@
 /**
- * Google Apps Script for Google Sheets
+ * Google Apps Script for Google Sheets updated
  * This script can be used to automate tasks in the escort data spreadsheet.
  */
 
@@ -7,30 +7,53 @@
 // Web app function for POST requests (Telegram webhook)
 function doPost(e) {
   try {
+    if (!e || !e.postData || !e.postData.contents) {
+      return ContentService.createTextOutput("OK");
+    }
+
     const update = JSON.parse(e.postData.contents);
 
-    if (update.message && update.message.chat.id == TELEGRAM_CHAT_ID) {
+    // Verify authorized user/chat
+    if (update.message && String(update.message.chat.id) === String(TELEGRAM_CHAT_ID)) {
       const text = update.message.text;
 
       if (text) {
-        sendTelegramMessage("Hay đấy, chờ tý");
-        const rule = makeTheRule(text);
-        const data = getSheetData(SHEET_NAME);
-        const result = data.filter(item => applyFilters(item, JSON.parse(rule)));
-        sendResultData(result);
-        sendTelegramMessage("Thỏa mãn chưa?");
-        return
+        sendTelegramMessage("⏳ Đang tìm kiếm dữ liệu, chờ chút nhé...");
+        
+        const ruleJson = makeTheRule(text);
+        if (!ruleJson) {
+          sendTelegramMessage("❌ Không thể tạo điều kiện lọc từ yêu cầu của bạn.");
+          return ContentService.createTextOutput("OK");
+        }
 
+        let parsedRule;
+        try {
+          parsedRule = JSON.parse(ruleJson);
+        } catch (parseErr) {
+          Logger.log("Rule JSON parse error: " + parseErr + " | Rule text: " + ruleJson);
+          sendTelegramMessage("❌ Lỗi phân tích cú pháp điều kiện từ AI.");
+          return ContentService.createTextOutput("OK");
+        }
+
+        const sheetName = getSheetName();
+        const data = getSheetData(sheetName);
+
+        if (!data || data.length === 0) {
+          sendTelegramMessage(`⚠️ Không tìm thấy bảng dữ liệu ngày <b>${escapeHtml(sheetName)}</b>.`);
+          return ContentService.createTextOutput("OK");
+        }
+
+        const result = data.filter(item => applyFilters(item, parsedRule));
+        sendResultData(result);
+        return ContentService.createTextOutput("OK");
       }
     }
 
-    // Return simple OK response
-    sendTelegramMessage("Không có lệnh phù hợp");
-    return;
+    return ContentService.createTextOutput("OK");
 
   } catch (error) {
     Logger.log('Error processing webhook: ' + error);
-    sendTelegramMessage("Yêu cầu không hợp lệ: ", error);
-    return
+    sendTelegramMessage("⚠️ Yêu cầu không hợp lệ hoặc xảy ra lỗi: " + error.toString());
+    return ContentService.createTextOutput("OK");
   }
 }

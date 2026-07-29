@@ -230,17 +230,5 @@ function distinctByFields(arr, fields) {
 
 
 
-const rule = `
-{ "logic": "and", "filters": [ { "field": "Năm Sinh", "operator": "<=", "value": 2005 }, { "field": "Địa chỉ", "operator": "contains", "value": "quận 8" } ] }
-`
 
 
-
-const data = [
-    { name: "Tony", age: 25, country: "VN" },
-    { name: "Alex", age: 17, country: "VN" },
-    { name: "John", age: 22, country: "US" },
-];
-const result = data.filter(item => applyFilters(item, JSON.parse(rule)));
-
-console.log(result);

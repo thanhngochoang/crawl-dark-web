@@ -1,8 +1,19 @@
 
 // Function to get data from a specific sheet
 function getSheetData(sheetName) {
-    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+    const targetName = sheetName || getSheetName();
+    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = spreadsheet ? spreadsheet.getSheetByName(targetName) : null;
+    
+    if (!sheet) {
+        Logger.log(`Sheet "${targetName}" not found.`);
+        return [];
+    }
+
     const data = sheet.getDataRange().getValues();
+    if (!data || data.length <= 1) {
+        return [];
+    }
     const headers = data[0];
     const rows = data.slice(1);
 
