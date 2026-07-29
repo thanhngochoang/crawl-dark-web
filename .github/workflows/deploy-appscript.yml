@@ -1,0 +1,63 @@
+name: Deploy Google Apps Script
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'src/app-script/**'
+      - '.github/workflows/deploy-appscript.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy Apps Script via Clasp
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+
+      - name: Install @google/clasp
+        run: npm install -g @google/clasp
+
+      - name: Setup Clasp Auth Credentials
+        run: |
+          cat <<'EOF' > ~/.clasprc.json
+          ${{ secrets.CLASPRC_JSON }}
+          EOF
+          chmod 600 ~/.clasprc.json
+
+      - name: Generate .clasp.json Configuration
+        run: |
+          cat <<EOF > .clasp.json
+          {
+            "scriptId": "${{ secrets.APPS_SCRIPT_ID }}",
+            "rootDir": "src/app-script"
+          }
+          EOF
+
+      - name: Push Apps Script Code
+        run: clasp push -f
+
+      - name: Deploy Apps Script Web App (Update Deployment)
+        run: |
+          if [ -n "${{ secrets.APPS_SCRIPT_DEPLOYMENT_ID }}" ]; then
+            echo "Updating existing Web App Deployment ID: ${{ secrets.APPS_SCRIPT_DEPLOYMENT_ID }}"
+            clasp deploy --deployId "${{ secrets.APPS_SCRIPT_DEPLOYMENT_ID }}" --description "Automated CI Deployment #${{ github.run_number }}"
+          else
+            echo "APPS_SCRIPT_DEPLOYMENT_ID not set. Creating new deployment version..."
+            clasp deploy --description "Automated CI Deployment #${{ github.run_number }}"
+          fi
+
+      - name: Cleanup Sensitive Credentials
+        if: always()
+        run: |
+          rm -f ~/.clasprc.json
+          rm -f .clasp.json

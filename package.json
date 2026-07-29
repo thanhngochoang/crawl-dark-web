@@ -5,7 +5,9 @@
     "start": "npx ts-node src/index.ts",
     "test": "UPLOAD_TO_SHEETS=false npx ts-node src/index.ts",
     "dev": "ts-node src/index.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "push:script": "clasp push",
+    "deploy:script": "clasp push && clasp deploy"
   },
   "dependencies": {
     "@types/jsdom": "^27.0.0",
@@ -18,6 +20,7 @@
     "tsc-esm-fix": "^3.1.2"
   },
   "devDependencies": {
+    "@google/clasp": "^2.4.2",
     "@types/node": "^24.2.1",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.2"

@@ -8,4 +8,6 @@ credentials.json
 .env.local
 .env.*.local
 config.json
+.clasp.json
+.clasprc.json
 
