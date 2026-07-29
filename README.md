@@ -1,6 +1,6 @@
 # Dark Web Crawler
 
-A Node.js/TypeScript project to scrape escort data from websites and save to CSV and Google Sheets.
+A Node.js/TypeScript project to scrape escort data from websites and save to CSV and Google Sheets using Playwright.
 
 ## Prerequisites
 
@@ -21,6 +21,7 @@ cd crawl-dark-web
 
 ```bash
 npm install
+npx playwright install chromium
 ```
 
 ### 3. Get Google Credentials
@@ -48,10 +49,15 @@ npm install
 
 ### 4. Configure the Project
 
-1. Place `credentials.json` in the root directory of the project.
-2. Set the `SPREADSHEET_ID` environment variable to your Google Sheet ID (default: `1cbCBWczW85kFIHKmDGAYwdNj1WPGpkDlTt_jRB8s0zQ`).
-   - For local: Create a `.env` file or export the variable: `export SPREADSHEET_ID=your_sheet_id`
-   - For GitHub Actions: Set it as a repository secret named `SPREADSHEET_ID`.
+1. Copy `.env.example` to `.env`:
+   ```bash
+   cp .env.example .env
+   ```
+2. Set environment variables in `.env`:
+   - `SPREADSHEET_ID`: Your Google Sheet ID.
+   - `BASE_URL`: The starting URL to crawl.
+   - `UPLOAD_TO_SHEETS`: Set to `true` (default) to upload to Google Sheets, or `false` to skip uploading during debug/tests.
+3. Place `credentials.json` in the root directory of the project.
 
 ### 5. For GitHub Actions (Optional)
 
@@ -61,23 +67,31 @@ If you want to run the scraper via GitHub Actions:
 2. Navigate to "Secrets and variables" > "Actions".
 3. Create the following secrets:
    - `GOOGLE_CREDENTIALS_JSON`: Paste the entire content of your `credentials.json` file.
-   - `SPREADSHEET_ID`: Your Google Sheet ID (e.g., `1cbCBWczW85kFIHKmDGAYwdNj1WPGpkDlTt_jRB8s0zQ`).
-4. Remove `credentials.json` from your local repository and commit the change.
+   - `SPREADSHEET_ID`: Your Google Sheet ID.
+   - `BASE_URL`: Your target URL.
 
 ## Running the Project
 
-### Local Execution
+### Local Execution (Full Execution with Google Sheets Upload)
 
 ```bash
 npm start
 # Or specify a custom URL:
-npm start "https://example.com/gai-goi/sai-gon?a=20"
+npm start "https://example.com/gai-goi/sai-gon"
+```
+
+### Local Execution (Test Mode - CSV Only, Skip Upload)
+
+```bash
+npm test
+# Or specify a custom URL:
+npm test "https://example.com/gai-goi/sai-gon"
 ```
 
 This will:
-- Scrape data from the specified website (defaults to `https://gaigu41.tv/gai-goi/sai-gon?a=20` if none provided).
+- Scrape data from the specified website.
 - Save data to CSV files in the root directory.
-- Append data to Google Sheets (creating sheets as needed with today's date format YYYY-MM-DD).
+- Append data to Google Sheets (if `UPLOAD_TO_SHEETS` is `true` and credentials exist).
 
 ### Manual Execution via GitHub Actions
 
@@ -88,66 +102,37 @@ This will:
 ## Project Structure
 
 - `src/index.ts`: Main entry point for full scraping.
-- `src/util.ts`: Utility functions for scraping and data processing.
+- `src/util.ts`: Utility functions for scraping and data processing using Playwright.
 - `src/csv.util.ts`: Functions for CSV and Google Sheets operations.
 - `src/model.ts`: TypeScript interfaces and configurations.
+- `src/app-script/`: Google Apps Script source files for Google Sheets integration.
 - `.github/workflows/scrape.yml`: GitHub Actions workflow for manual execution.
 
 ## Features
 
-- Web scraping using Puppeteer.
+- Web scraping using **Playwright**.
 - Automatic sheet creation in Google Sheets.
+- Option to disable Google Sheets upload during debug (`UPLOAD_TO_SHEETS=false`).
 - Date-based sheet naming (YYYY-MM-DD).
 - CSV export with UTF-8 BOM for Excel compatibility.
 - Error handling and retries.
 
 ## Google Apps Script Integration
 
-The `apps-script.gs` file contains Google Apps Script code that can be used in your Google Sheet for additional automation.
+The `src/app-script/` directory contains Google Apps Script code that can be deployed to your Google Sheet for additional automation.
 
-### Setup Telegram Integration
+### Setup Telegram Integration via Script Properties
 
-1. Create a Telegram bot:
-   - Message `@BotFather` on Telegram
-   - Use `/newbot` command and follow instructions
-   - Save the bot token
-
-2. Get your chat ID:
-   - Message your bot
-   - Visit `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates`
-   - Find your chat ID in the response
-
-3. In Google Apps Script:
-   - Open your sheet's script editor
-   - Update the configuration constants with your values
-   - Deploy the script as a web app: **Publish > Deploy as web app**
-   - Set "Execute the app as:" to "Me"
-   - Set "Who has access to the app:" to "Anyone, even anonymous"
-   - Copy the deployed URL and update `DEPLOYED_URL` in the script
-   - Run `setupTelegramWebhook()` from the menu to activate the webhook
-   - Save the script
-
-4. Authorize the script to send external requests (for Telegram API)
-
-### Apps Script Features
-
-- **Data Filtering**: Filter data by location, price, or age
-- **Telegram Notifications**: Send filtered results or daily summaries to Telegram
-- **Telegram Commands**: Receive and process filter commands via Telegram bot
-- **Read-Only Operations**: All operations read data without modifying the spreadsheet
-- **Custom Menu**: Access read-only features from the Sheets UI
-
-### Telegram Commands
-
-Send commands to your bot to filter and retrieve data in real-time:
-
-- `/filter location <location>` - Filter by location (e.g., `/filter location Sài Gòn`)
-- `/filter price <operator><amount>` - Filter by price (e.g., `/filter price <500000`)
-- `/filter age <min>-<max>` - Filter by age range (e.g., `/filter age 18-25`)
-- `/summary` - Get daily summary
-- `/help` - Show available commands
-
-Commands are processed instantly via webhook when you send messages to the bot.
+1. Create a Telegram bot via `@BotFather`.
+2. In Google Apps Script Editor (**Extensions > Apps Script**):
+   - Go to **Project Settings** > **Script Properties**.
+   - Add the following properties:
+     - `TELEGRAM_BOT_TOKEN`: Your Telegram Bot token.
+     - `TELEGRAM_CHAT_ID`: Your Telegram Chat ID.
+     - `GEMINI_API_KEY`: Your Gemini API key.
+     - `SPREADSHEET_ID`: Your Google Sheet ID.
+     - `DEPLOYED_URL`: Deployed Web App URL.
+3. Deploy as Web App with access set to "Anyone".
 
 ## License
 
