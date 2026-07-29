@@ -4,6 +4,55 @@ import { appendToCSV, ensureSheetExists, readCsvToObject } from "./csv.util";
 
 export const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+export const getRandomDelay = (
+  minMs = parseInt(process.env.CRAWL_MIN_DELAY_MS || "1500", 10),
+  maxMs = parseInt(process.env.CRAWL_MAX_DELAY_MS || "3500", 10)
+): number => {
+  const min = Math.min(minMs, maxMs);
+  const max = Math.max(minMs, maxMs);
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+};
+
+export async function configureAntiSpam(target: BrowserContext | Page): Promise<void> {
+  if (process.env.BLOCK_RESOURCES === "true") {
+    await target.route("**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf,mp4,mp3}", (route) => route.abort());
+  }
+}
+
+export async function navigateWithRetry(
+  page: Page,
+  url: string,
+  options: Parameters<Page['goto']>[1] = { waitUntil: "domcontentloaded", timeout: 30000 },
+  maxRetries = parseInt(process.env.CRAWL_MAX_RETRIES || "3", 10)
+): Promise<boolean> {
+  let attempt = 0;
+  while (attempt <= maxRetries) {
+    try {
+      const response = await page.goto(url, options);
+      const status = response?.status();
+
+      if (status === 429 || status === 503) {
+        attempt++;
+        const backoffMs = Math.pow(2, attempt) * 3000 + getRandomDelay(1000, 2000);
+        console.warn(`[AntiSpam] Server status ${status} (Rate limited). Backing off for ${Math.round(backoffMs / 1000)}s (retry ${attempt}/${maxRetries})...`);
+        await sleep(backoffMs);
+        continue;
+      }
+      return true;
+    } catch (err) {
+      attempt++;
+      if (attempt > maxRetries) {
+        console.error(`[AntiSpam] Failed to load ${url} after ${maxRetries} retries: ${(err as Error).message}`);
+        return false;
+      }
+      const backoffMs = Math.pow(2, attempt) * 2000 + getRandomDelay(500, 1500);
+      console.warn(`[AntiSpam] Navigation warning (${(err as Error).message}). Retrying in ${Math.round(backoffMs / 1000)}s (retry ${attempt}/${maxRetries})...`);
+      await sleep(backoffMs);
+    }
+  }
+  return false;
+}
+
 export function getSheetName(): string {
   const today = new Date();
   const year = today.getFullYear();
@@ -30,15 +79,22 @@ export async function autoScroll(page: Page): Promise<void> {
 }
 
 export const scrapeEscortPage = async function (link: string, browser: BrowserContext | Browser): Promise<EscortData> {
-  const context = 'newContext' in browser ? await browser.newContext() : browser;
+  const isCreatedContext = 'newContext' in browser;
+  const context = isCreatedContext ? await browser.newContext({
+    userAgent: process.env.USER_AGENT || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    extraHTTPHeaders: {
+      "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+      "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+      "Sec-Ch-Ua-Mobile": "?0",
+      "Sec-Ch-Ua-Platform": '"Windows"'
+    }
+  }) : browser;
+
+  await configureAntiSpam(context);
   const page = await context.newPage();
 
   try {
-    try {
-      await page.goto(link, { waitUntil: "domcontentloaded", timeout: 30000 });
-    } catch (e) {
-      console.warn("Navigation timeout or network error, proceeding with available DOM...", (e as Error).message);
-    }
+    await navigateWithRetry(page, link);
 
     try {
       await page.waitForSelector(".attr-row, .main-content-escort, body", { timeout: 10000 });
@@ -236,7 +292,9 @@ export const readAll = async (browser: BrowserContext | Browser, batchSize: numb
     const data = await scrapeEscortPage(link, browser);
     await appendToCSV('log', csvMapping, [data], sheetName);
     data.SoDienThoai && results.push(data);
-    await sleep(1000);
+    const delay = getRandomDelay();
+    console.log(`[AntiSpam] Waiting ${delay}ms before next request...`);
+    await sleep(delay);
   }
   return results;
 }
