@@ -77,7 +77,7 @@ If you want to run the scraper via GitHub Actions:
 ```bash
 npm start
 # Or specify a custom URL:
-npm start "https://example.com/gai-goi/sai-gon"
+npm start "https://example.com/"
 ```
 
 ### Local Execution (Test Mode - CSV Only, Skip Upload)
@@ -85,7 +85,7 @@ npm start "https://example.com/gai-goi/sai-gon"
 ```bash
 npm test
 # Or specify a custom URL:
-npm test "https://example.com/gai-goi/sai-gon"
+npm test "https://example.com/"
 ```
 
 This will:
