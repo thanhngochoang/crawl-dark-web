@@ -5,3 +5,8 @@ dist/
 package-lock.json
 yarn.lock
 credentials.json
+.env
+.env.local
+.env.*.local
+config.json
+
