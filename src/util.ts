@@ -33,8 +33,15 @@ export const scrapeEscortPage = async function (link: string, browser: Browser):
   const page = await browser.newPage();
 
   try {
-    await page.goto(link, { waitUntil: "networkidle2", timeout: 30000 });
-    await page.waitForSelector(".main-content-escort", { timeout: 10000 });
+    try {
+      await page.goto(link, { waitUntil: "networkidle2", timeout: 30000 });
+    } catch (e) {
+      console.warn("Navigation timeout or network error, proceeding with available DOM...", (e as Error).message);
+    }
+
+    try {
+      await page.waitForSelector(".attr-row, .main-content-escort, body", { timeout: 10000 });
+    } catch (_) {}
 
     const data = await page.evaluate(() => {
       const clean = (s?: string | null): string =>
@@ -63,19 +70,15 @@ export const scrapeEscortPage = async function (link: string, browser: Browser):
       };
 
 
-      const attrLabels = Array.from(document.querySelectorAll(".attributes .col-md-4, .attributes .col-4"));
-      const attrValues = Array.from(document.querySelectorAll(".attributes .col-md-8, .attributes .col-8"));
-      const elementCreate = document.querySelectorAll(".main-content-escort")[0].nextElementSibling?.querySelectorAll('.content-left .card-sub .float-right');
-      for (let i = 0; i < attrLabels.length; i++) {
+      const processKeyValue = (rawLabel: string, value: string, rowEl?: Element | null) => {
+        const label = normalize(rawLabel);
 
-        const label = normalize(clean(attrLabels[i].textContent));
-
-        const value = clean(attrValues[i]?.textContent);
-
-        if (label.includes("gia")) {
+        if (label.includes("thoi gian")) {
+          // ignore or handle working hours if needed
+        } else if (label.includes("gia")) {
           result.Gia = value;
-        } else if (label.includes("so dien thoai")) {
-          const telLink = attrValues[i]?.querySelector<HTMLAnchorElement>('a[href^="tel:"]');
+        } else if (label.includes("so dien thoai") || label === "sdt") {
+          const telLink = rowEl?.querySelector<HTMLAnchorElement>('a[href^="tel:"]');
           result.SoDienThoai = telLink
             ? telLink.href.replace("tel:", "").trim()
             : value.replace(/[^\d+]/g, "").trim();
@@ -95,15 +98,81 @@ export const scrapeEscortPage = async function (link: string, browser: Browser):
           result.KhuVuc = value;
         } else if (label.includes("dia chi")) {
           result.DiaChi = value;
+        } else if (label.includes("dich vu")) {
+          const items = value.split(/\s*[-,-]\s*/).map(s => s.trim()).filter(Boolean);
+          if (items.length > 0) {
+            result.DichVu = items;
+          }
+        }
+      };
+
+      // 1. Legacy .attributes layout
+      const attrLabels = Array.from(document.querySelectorAll(".attributes .col-md-4, .attributes .col-4"));
+      const attrValues = Array.from(document.querySelectorAll(".attributes .col-md-8, .attributes .col-8"));
+      for (let i = 0; i < attrLabels.length; i++) {
+        const label = clean(attrLabels[i].textContent);
+        const value = clean(attrValues[i]?.textContent);
+        processKeyValue(label, value, attrValues[i]);
+      }
+
+      // 2. New .attr-row layout
+      const attrRows = Array.from(document.querySelectorAll(".attr-row"));
+      for (const row of attrRows) {
+        const children = Array.from(row.children);
+        const labelEl = children.find(el => el.tagName === "SPAN" && el.textContent && !el.querySelector("svg"));
+        if (!labelEl) continue;
+
+        const label = clean(labelEl.textContent);
+        const labelIndex = children.indexOf(labelEl);
+
+        const telLink = row.querySelector<HTMLAnchorElement>('a[href^="tel:"]');
+        let value = "";
+        if (telLink) {
+          value = telLink.href.replace("tel:", "").trim() || clean(telLink.textContent);
+        } else {
+          const valueEls = children.slice(labelIndex + 1);
+          value = valueEls.map(el => clean(el.textContent)).filter(Boolean).join(" ");
+        }
+
+        processKeyValue(label, value, row);
+      }
+
+      // 3. Fallback for KhuVuc if empty but DiaChi exists
+      if (!result.KhuVuc && result.DiaChi) {
+        const parts = result.DiaChi.split(",").map(p => p.trim());
+        if (parts.length >= 2) {
+          result.KhuVuc = parts.slice(1).join(", ");
+        } else {
+          result.KhuVuc = result.DiaChi;
         }
       }
-      const elementView = (elementCreate ? elementCreate[1].textContent : "")?.trim().split(' ').filter(x => !!x)
+
+      // 4. Creation date and views
+      const elementCreate = document.querySelectorAll(".page-main, .main-content-escort")[0]?.nextElementSibling?.querySelectorAll('.content-left .card-sub .float-right');
+      const elementView = (elementCreate && elementCreate[1] ? elementCreate[1].textContent : "")?.trim().split(' ').filter(x => !!x);
 
       result.NgayTao = elementView && elementView?.length > 2 ? elementView?.[2] : "";
       result.LuotXem = elementView && elementView?.length > 0 ? elementView?.[0] : "";
-      // 3. Extract services
+
+      if (!result.NgayTao) {
+        const bodyText = document.body.innerText;
+        const dateMatch = bodyText.match(/(?:Ngày đăng|Đăng ngày|Ngày tạo):\s*(\d{2}\/\d{2}\/\d{4})/i);
+        if (dateMatch) {
+          result.NgayTao = dateMatch[1];
+        }
+      }
+
+      if (!result.LuotXem) {
+        const bodyText = document.body.innerText;
+        const viewMatch = bodyText.match(/(\d+[\d,.]*)\s*(?:lượt xem|Lượt xem)/i);
+        if (viewMatch) {
+          result.LuotXem = viewMatch[1];
+        }
+      }
+
+      // 5. Extract services (legacy fallback)
       const servicesSection = document.querySelector(".services");
-      if (servicesSection) {
+      if (servicesSection && result.DichVu.length === 0) {
         result.DichVu = Array.from(servicesSection.querySelectorAll("span"))
           .map(span => clean(span.textContent))
           .filter(Boolean);

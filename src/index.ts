@@ -26,20 +26,26 @@ async function main(urlArg?: string): Promise<void> {
     await ensureSheetExists(sheetName, headers);
     while (true) {
 
-        await page.goto(baseUrl + nextPage(pageIndex++), { waitUntil: "networkidle2" });
+        await page.goto(baseUrl + nextPage(pageIndex), { waitUntil: "networkidle2" });
         await page.waitForSelector("body", { timeout: 10000 });
-        await page.waitForSelector("div.escort-list a", { timeout: 60000 });
+        try {
+            await page.waitForSelector("div.product-grid a, div.escort-list a, .product-grid a, .escort-list a", { timeout: 10000 });
+        } catch (_) {}
         await sleep(1000);
 
-        const links: string[] = await page.$$eval("div.escort-list > a", (as) =>
-            as.map((a) => (a as HTMLAnchorElement).href).filter(Boolean)
+        const links: string[] = await page.$$eval(
+            "div.escort-list a, div.product-grid a, .escort-list a, .product-grid a, a[href*='/gai-goi/']",
+            (as) => as.map((a) => (a as HTMLAnchorElement).href)
+                      .filter(Boolean)
+                      .filter(href => /\/gai-goi\/\d+(\/|$)/.test(href))
         );
 
         const uniqueLinks = [...new Set(links)];
+        console.log(`Found ${uniqueLinks.length} detail links on page ${pageIndex}`);
         const results = await readAll(browser, 1000, uniqueLinks);
         csvData.push(...results);
         pageIndex++;
-        if (!(results.length > 1)) break;
+        if (!(results.length >= 1)) break;
     }
 
     await saveToCSV("export", csvMapping, csvData, sheetName);
