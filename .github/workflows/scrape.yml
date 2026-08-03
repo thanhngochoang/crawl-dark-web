@@ -8,38 +8,41 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '24.x'
-        cache: 'npm'
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24.x"
+          cache: "npm"
 
-    - name: Create credentials file
-      run: |
-        cat <<EOF > credentials.json
-        ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
-        EOF
+      - name: Create credentials file
+        run: |
+          cat <<EOF > credentials.json
+          ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          EOF
 
-    - name: Verify credentials file
-      run: |
-        if [ ! -f credentials.json ]; then
-          echo "credentials.json not found"
-          exit 1
-        fi
-        echo "credentials.json exists, size: $(wc -c < credentials.json) bytes"
+      - name: Verify credentials file
+        run: |
+          if [ ! -f credentials.json ]; then
+            echo "credentials.json not found"
+            exit 1
+          fi
+          echo "credentials.json exists, size: $(wc -c < credentials.json) bytes"
 
-    - name: Install dependencies (clean & cached)
-      run: npm ci
+      - name: Install dependencies (clean & cached)
+        run: npm ci
 
-    - name: Run scraper
-      run: npm start ${{ secrets.BASE_URL }}
-      env:
-        SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-        BASE_URL: ${{ secrets.BASE_URL }}
+      - name: Install Playwright Browsers
+        run: npx playwright install chromium --with-deps
 
-    - name: Cleanup credentials
-      if: always()
-      run: rm -f credentials.json
+      - name: Run scraper
+        run: npm start ${{ secrets.BASE_URL }}
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          BASE_URL: ${{ secrets.BASE_URL }}
+
+      - name: Cleanup credentials
+        if: always()
+        run: rm -f credentials.json
