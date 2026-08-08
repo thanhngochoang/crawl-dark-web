@@ -80,7 +80,13 @@ class DataQuery {
 }
 ```
 
-### 3.4 Backwards Compatibility
+### 3.4 Daily Data Query Caching (`DataQuery.fromSheet(sheetName)`)
+To optimize execution speed in Google Apps Script (preventing repeated expensive Google Spreadsheet file reads during Telegram webhook calls):
+- `DataQuery` will incorporate daily caching using `CacheService.getScriptCache()` and an in-memory static store keyed by date (`YYYY-MM-DD`).
+- **`DataQuery.fromSheet(sheetName)`**: Convenience method that loads and caches parsed sheet data for the given day, returning a pre-populated `DataQuery` instance ready for filtering.
+- **Cache Eviction / Invalidation**: Cache automatically scopes by daily date string `YYYY-MM-DD` and expires after 6 hours (or when explicitly cleared via `DataQuery.clearCache()`).
+
+### 3.5 Backwards Compatibility
 All existing top-level functions (`applyFilters`, `matchFilter`, `orderBy`, `groupByKey`, `distinctByFields`, `filterByText`, `partitionArray`, `removeUnicode`, etc.) will remain exported and functional.
 
 ---
