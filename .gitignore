@@ -10,4 +10,6 @@ credentials.json
 config.json
 .clasp.json
 .clasprc.json
-
+.DS_Store
+docs/
+.superpowers/

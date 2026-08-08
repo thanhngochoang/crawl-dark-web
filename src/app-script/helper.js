@@ -1,7 +1,9 @@
 // Function to query sheet data using Gemini AI
 
-function makeTheRule(query) {
-    const prompt = `
+// Function to query sheet data using Gemini AI
+
+function buildPrompt(query) {
+    return `
 Bạn là một bộ chuyển đổi từ ngôn ngữ tự nhiên sang cấu trúc JSON rule.
 
 Yêu cầu:
@@ -43,34 +45,68 @@ Yêu cầu:
 - "Chiều Cao"
 - "Xuất xứ"
 - "Số đồ 3 vòng"
+- "Số đồ 3 vòng.bust"
+- "Số đồ 3 vòng.hip"
 - "Địa chỉ"
 
 ---
 
-🧮 **Quy tắc xử lý:**
+🧮 **Quy tắc xử lý và Quy đổi Giá trị (Confluence Rules):**
 
-- Nếu câu chứa "và" → dùng '"logic": "and"'.
-- Nếu câu chứa "hoặc" / "hay" → dùng '"logic": "or"'.
-- Nếu câu có so sánh như “lớn hơn”, “bé hơn”, “cao hơn”, “nhiều hơn” → dùng các toán tử \`>\`, \`<\`, \`>=\`, \`<=\`.
-- Nếu câu có “bằng”, “là”, “giống như” → dùng \`==\`.
-- Nếu câu có “khác”, “không phải” → dùng \`!=\`.
-- Nếu câu có “chứa”, "khu vực", "ở", "khu", “bao gồm”, “có chữ” → dùng \`contains\`.
-- Nếu câu có “trong danh sách”, “thuộc nhóm”, “một trong” → dùng \`in\`.
-- Luôn giữ giá trị ("value") ở dạng gốc, không dịch hoặc viết tắt.
-- Nếu có khoảng giá trị (“từ 100 đến 500”) → chuyển thành nhóm '"logic": "and"' gồm hai điều kiện '>= ' và '<= '.
+1. **Toán tử & Logic:**
+   - Nếu câu chứa "và" → dùng '"logic": "and"'.
+   - Nếu câu chứa "hoặc" / "hay" → dùng '"logic": "or"'.
+   - So sánh "lớn hơn", "bé hơn", "cao hơn", "nhiều hơn", "trên", "dưới" → dùng các toán tử '>', '<', '>=', '<='.
+   - "bằng", "là", "giống như" → dùng '=='.
+   - "khác", "không phải" → dùng '!='.
+   - "chứa", "khu vực", "ở", "khu", "bao gồm", "có chữ" → dùng 'contains'.
+   - "trong danh sách", "thuộc nhóm", "một trong" → dùng 'in'.
+   - Khoảng giá trị ("từ A đến B") → nhóm '"logic": "and"' gồm 2 điều kiện '>=' A và '<=' B.
+
+2. **Chuyển đổi Giá ("Giá"):**
+   - Đơn vị chuẩn của field "Giá" là **nghìn VNĐ** ('k' unit).
+   - "500k", "500.000", "500 nghìn" → 500
+   - "1 triệu", "1tr" → 1000
+   - "1.5 triệu", "1tr5" → 1500
+
+3. **Chuyển đổi Chiều Cao & Cân Nặng ("Chiều Cao", "Cân Nặng"):**
+   - Chiều Cao quy về số thuần **cm**: "1m65", "165cm" → 165.
+   - Cân Nặng quy về số thuần **kg**: "50kg" → 50.
+
+4. **Chuyển đổi Tuổi sang Năm Sinh ("Năm Sinh"):**
+   - Năm hiện tại tham chiếu là **2026**.
+   - "dưới 25 tuổi" (trẻ hơn 25 tuổi) → {"field": "Năm Sinh", "operator": ">=", "value": 2001} (2026 - 25 = 2001)
+   - "trên 20 tuổi" (lớn hơn 20 tuổi) → {"field": "Năm Sinh", "operator": "<=", "value": 2006} (2026 - 20 = 2006)
+   - "từ 20 đến 25 tuổi" → nhóm '"logic": "and"' gồm {"field": "Năm Sinh", "operator": ">=", "value": 2001} và {"field": "Năm Sinh", "operator": "<=", "value": 2006}.
+   - "sinh năm 2000" → {"field": "Năm Sinh", "operator": "==", "value": 2000}.
+
+5. **Phân rã Số đồ 3 vòng ("Số đồ 3 vòng" sub-fields):**
+   - "vòng 1" → field "Số đồ 3 vòng.bust" (Ví dụ: "vòng 1 trên 90" → {"field": "Số đồ 3 vòng.bust", "operator": ">=", "value": 90})
+   - "vòng 3" → field "Số đồ 3 vòng.hip" (Ví dụ: "vòng 3 trên 90" → {"field": "Số đồ 3 vòng.hip", "operator": ">=", "value": 90})
+
+6. **Chuẩn hóa Địa danh ("Khu Vực", "Địa chỉ"):**
+   - "HN" → "Hà Nội"
+   - "SG" hoặc "HCM" → "Hồ Chí Minh"
+   - "ĐN" → "Đà Nẵng"
 
 ---
 
 📊 **Ví dụ:**
 
 **Input:**
-> Giá lớn hơn 500 và Khu Vực là Hà Nội hoặc Hồ Chí Minh
+> Giá từ 500k đến 1.5 triệu và Khu Vực ở HN hoặc HCM
 
 **Output:**
 {
   "logic": "and",
   "filters": [
-    { "field": "Giá", "operator": ">", "value": 500 },
+    {
+      "logic": "and",
+      "filters": [
+        { "field": "Giá", "operator": ">=", "value": 500 },
+        { "field": "Giá", "operator": "<=", "value": 1500 }
+      ]
+    },
     {
       "logic": "or",
       "filters": [
@@ -84,20 +120,16 @@ Yêu cầu:
 ---
 
 **Input:**
-> Cân Nặng từ 50 đến 60 và Chiều Cao lớn hơn 165
+> Chiều Cao 1m65, Cân Nặng 50kg, dưới 25 tuổi và vòng 1 trên 90
 
 **Output:**
 {
   "logic": "and",
   "filters": [
-    {
-      "logic": "and",
-      "filters": [
-        { "field": "Cân Nặng", "operator": ">=", "value": 50 },
-        { "field": "Cân Nặng", "operator": "<=", "value": 60 }
-      ]
-    },
-    { "field": "Chiều Cao", "operator": ">", "value": 165 }
+    { "field": "Chiều Cao", "operator": "==", "value": 165 },
+    { "field": "Cân Nặng", "operator": "==", "value": 50 },
+    { "field": "Năm Sinh", "operator": ">=", "value": 2001 },
+    { "field": "Số đồ 3 vòng.bust", "operator": ">=", "value": 90 }
   ]
 }
 
@@ -108,7 +140,11 @@ Bây giờ, hãy chuyển câu tiếng Việt sau thành JSON rule đúng theo f
 ${query}
 Phản hồi của bạn phải là một đối tượng JSON HỢP LỆ và KHÔNG được bao bọc trong bất kỳ ký hiệu markdown code block nào (ví dụ: KHÔNG dùng markdown json);
 `;
+}
 
+function makeTheRule(query, returnPromptOnly = false) {
+    const prompt = buildPrompt(query);
+    if (returnPromptOnly) return prompt;
     return callGemini(prompt);
 }
 
@@ -174,4 +210,13 @@ function callGemini(prompt) {
         return null;
     }
 }
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        makeTheRule,
+        buildPrompt,
+        callGemini
+    };
+}
+
 

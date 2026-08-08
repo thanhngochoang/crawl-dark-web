@@ -36,14 +36,13 @@ function doPost(e) {
         }
 
         const sheetName = getSheetName();
-        const data = getSheetData(sheetName);
+        const result = DataQuery.fromSheet(sheetName).applyRule(parsedRule).execute();
 
-        if (!data || data.length === 0) {
-          sendTelegramMessage(`⚠️ Không tìm thấy bảng dữ liệu ngày <b>${escapeHtml(sheetName)}</b>.`);
+        if (!result || result.length === 0) {
+          sendTelegramMessage("❌ Không có dữ liệu phù hợp.");
           return ContentService.createTextOutput("OK");
         }
 
-        const result = data.filter(item => applyFilters(item, parsedRule));
         sendResultData(result);
         return ContentService.createTextOutput("OK");
       }
