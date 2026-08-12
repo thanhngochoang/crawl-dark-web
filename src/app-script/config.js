@@ -2,6 +2,10 @@ function getConfig(key) {
     return PropertiesService.getScriptProperties().getProperty(key) ?? "";
 }
 
+function setConfig(key, value) {
+    PropertiesService.getScriptProperties().setProperty(key, value);
+}
+
 function getGeminiApiKey() {
     return getConfig("GEMINI_API_KEY");
 }
@@ -19,7 +23,19 @@ function getSpreadsheetId() {
 }
 
 function getDeployedUrl() {
-    return getConfig("DEPLOYED_URL");
+    let url = getConfig("DEPLOYED_URL");
+    if (!url && typeof ScriptApp !== 'undefined' && ScriptApp.getService) {
+        try {
+            url = ScriptApp.getService().getUrl();
+        } catch (e) {
+            // Ignore error if service is not deployed as Web App
+        }
+    }
+    return url;
+}
+
+function setDeployedUrl(url) {
+    setConfig("DEPLOYED_URL", url);
 }
 
 const TELEGRAM_BOT_TOKEN = getTelegramApiKey();

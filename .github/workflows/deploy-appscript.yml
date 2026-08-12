@@ -47,13 +47,43 @@ jobs:
         run: clasp push -f
 
       - name: Deploy Apps Script Web App (Update Deployment)
+        id: clasp_deploy
         run: |
           if [ -n "${{ secrets.APPS_SCRIPT_DEPLOYMENT_ID }}" ]; then
             echo "Updating existing Web App Deployment ID: ${{ secrets.APPS_SCRIPT_DEPLOYMENT_ID }}"
             clasp deploy --deployId "${{ secrets.APPS_SCRIPT_DEPLOYMENT_ID }}" --description "Automated CI Deployment #${{ github.run_number }}"
+            echo "DEPLOYMENT_ID=${{ secrets.APPS_SCRIPT_DEPLOYMENT_ID }}" >> $GITHUB_OUTPUT
           else
             echo "APPS_SCRIPT_DEPLOYMENT_ID not set. Creating new deployment version..."
-            clasp deploy --description "Automated CI Deployment #${{ github.run_number }}"
+            OUTPUT=$(clasp deploy --description "Automated CI Deployment #${{ github.run_number }}")
+            echo "$OUTPUT"
+            NEW_ID=$(echo "$OUTPUT" | grep -oE 'AKfycb[a-zA-Z0-9_-]+' | tail -n1 || true)
+            echo "DEPLOYMENT_ID=$NEW_ID" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update Telegram Webhook after Deployment
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+            echo "TELEGRAM_BOT_TOKEN secret is not set. Skipping webhook update."
+            exit 0
+          fi
+
+          DEPLOY_ID="${{ steps.clasp_deploy.outputs.DEPLOYMENT_ID }}"
+          if [ -z "$DEPLOY_ID" ]; then
+            DEPLOY_ID="${{ secrets.APPS_SCRIPT_DEPLOYMENT_ID }}"
+          fi
+
+          if [ -n "$DEPLOY_ID" ]; then
+            WEBHOOK_URL="https://script.google.com/macros/s/${DEPLOY_ID}/exec"
+            echo "Setting Telegram Webhook to: $WEBHOOK_URL"
+            RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+              -H "Content-Type: application/json" \
+              -d "{\"url\": \"${WEBHOOK_URL}\"}")
+            echo "Telegram API Response: $RESPONSE"
+          else
+            echo "⚠️ Could not determine DEPLOYMENT_ID to call setWebhook."
           fi
 
       - name: Cleanup Sensitive Credentials

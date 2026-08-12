@@ -99,32 +99,81 @@ function sendTelegramMessage(message) {
 }
 
 // Function to set webhook for Telegram
-function setWebhook() {
-    const url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/setWebhook";
+function setWebhook(customUrl) {
+    const token = getTelegramApiKey() || TELEGRAM_BOT_TOKEN;
+    const targetUrl = customUrl || getDeployedUrl() || DEPLOYED_URL;
+
+    if (!token) {
+        Logger.log("❌ Error setting webhook: TELEGRAM_BOT_TOKEN is not configured.");
+        return false;
+    }
+
+    if (!targetUrl) {
+        Logger.log("❌ Error setting webhook: DEPLOYED_URL is empty.");
+        return false;
+    }
+
+    const url = "https://api.telegram.org/bot" + token + "/setWebhook";
     const payload = {
-        url: DEPLOYED_URL,
+        url: targetUrl,
     };
 
     const options = {
         method: "post",
         contentType: "application/json",
         payload: JSON.stringify(payload),
+        muteHttpExceptions: true
     };
 
     try {
         const response = UrlFetchApp.fetch(url, options);
-        Logger.log("Webhook set: " + response.getContentText());
+        const resultText = response.getContentText();
+        Logger.log("Webhook set for URL (" + targetUrl + "): " + resultText);
+        return true;
     } catch (error) {
         Logger.log("Error setting webhook: " + error);
+        return false;
     }
+}
+
+/**
+ * Cập nhật DEPLOYED_URL trong Script Properties và tự động gọi setWebhook.
+ * Nếu không truyền newUrl, hàm sẽ tự động lấy Web App URL qua ScriptApp.getService().getUrl() (nếu có).
+ */
+function updateDeployedUrlAndSetWebhook(newUrl) {
+    let targetUrl = newUrl;
+
+    if (!targetUrl && typeof ScriptApp !== 'undefined' && ScriptApp.getService) {
+        try {
+            targetUrl = ScriptApp.getService().getUrl();
+        } catch (e) {
+            Logger.log("Không thể tự động lấy Web App URL: " + e);
+        }
+    }
+
+    if (targetUrl) {
+        setDeployedUrl(targetUrl);
+        Logger.log("Đã cập nhật DEPLOYED_URL trong Script Properties: " + targetUrl);
+    } else {
+        targetUrl = getDeployedUrl();
+    }
+
+    if (!targetUrl) {
+        Logger.log("❌ Không tìm thấy DEPLOYED_URL. Vui lòng truyền URL hoặc thiết lập DEPLOYED_URL trong Script Properties.");
+        return false;
+    }
+
+    return setWebhook(targetUrl);
 }
 
 // Function to remove webhook
 function removeWebhook() {
-    const url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/deleteWebhook";
+    const token = getTelegramApiKey() || TELEGRAM_BOT_TOKEN;
+    const url = "https://api.telegram.org/bot" + token + "/deleteWebhook";
 
     const options = {
         method: "post",
+        muteHttpExceptions: true
     };
 
     try {
@@ -135,16 +184,15 @@ function removeWebhook() {
     }
 }
 
-
-
 // Function to setup Telegram webhook
-function setupTelegramWebhook() {
-    setWebhook();
-    Logger.log("Telegram webhook set up");
+function setupTelegramWebhook(newUrl) {
+    const result = updateDeployedUrlAndSetWebhook(newUrl);
+    Logger.log("Telegram webhook setup completed.");
+    return result;
 }
 
 // Function to remove Telegram webhook
 function removeTelegramWebhook() {
     removeWebhook();
-    Logger.log("Telegram webhook removed");
+    Logger.log("Telegram webhook removed.");
 }

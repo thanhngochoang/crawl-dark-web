@@ -131,8 +131,23 @@ The `src/app-script/` directory contains Google Apps Script code that can be dep
      - `TELEGRAM_CHAT_ID`: Your Telegram Chat ID.
      - `GEMINI_API_KEY`: Your Gemini API key.
      - `SPREADSHEET_ID`: Your Google Sheet ID.
-     - `DEPLOYED_URL`: Deployed Web App URL.
+     - `DEPLOYED_URL`: Deployed Web App URL (Optional if auto-detected or updated via script/menu).
 3. Deploy as Web App with access set to "Anyone".
+
+### Updating Webhook Automatically after `DEPLOYED_URL` updates
+
+There are 3 convenient ways to update `DEPLOYED_URL` and call `setWebhook`:
+
+1. **Via Google Sheets Custom Menu**:
+   - Open your Google Sheet, click menu **`🤖 Telegram Bot`** > **`🔗 Cập nhật Webhook (Auto / Manual)`**.
+   - Leave input blank to auto-detect the current Web App URL, or paste a custom URL.
+   - Click **OK**; it will set `DEPLOYED_URL` in Script Properties and automatically trigger `setWebhook`.
+
+2. **Via Google Apps Script Editor**:
+   - In Apps Script editor, run function `updateDeployedUrlAndSetWebhook("https://script.google.com/macros/s/.../exec")` or `updateDeployedUrlAndSetWebhook()` (auto-detect URL).
+
+3. **Automatically via GitHub Actions**:
+   - When code in `src/app-script/` is pushed to `main`/`master`, the `.github/workflows/deploy-appscript.yml` workflow deploys via Clasp and automatically calls Telegram's `setWebhook` API with the newly deployed Web App URL (requires secret `TELEGRAM_BOT_TOKEN`).
 
 ## License
 
