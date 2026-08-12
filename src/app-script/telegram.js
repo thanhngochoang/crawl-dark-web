@@ -73,9 +73,22 @@ function sendResultData(data) {
 
 // Function to send message to Telegram
 function sendTelegramMessage(message) {
-    const url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendMessage";
+    const token = getTelegramApiKey() || TELEGRAM_BOT_TOKEN;
+    const chatId = getTelegramChatId() || TELEGRAM_CHAT_ID;
+
+    if (!token) {
+        Logger.log("❌ Error sending message: TELEGRAM_BOT_TOKEN is not configured.");
+        return false;
+    }
+
+    if (!chatId) {
+        Logger.log("❌ Error sending message: TELEGRAM_CHAT_ID is not configured.");
+        return false;
+    }
+
+    const url = "https://api.telegram.org/bot" + token + "/sendMessage";
     const payload = {
-        chat_id: TELEGRAM_CHAT_ID,
+        chat_id: chatId,
         text: message,
         parse_mode: "HTML",
         disable_web_page_preview: true
@@ -90,12 +103,90 @@ function sendTelegramMessage(message) {
 
     try {
         const response = UrlFetchApp.fetch(url, options);
-        Logger.log("Telegram message sent: " + response.getContentText());
-        return true;
+        const resText = response.getContentText();
+        Logger.log("Telegram message response: " + resText);
+        const resJson = JSON.parse(resText);
+        return resJson && resJson.ok === true;
     } catch (error) {
         Logger.log("Error sending Telegram message: " + error);
         return false;
     }
+}
+
+/**
+ * Function to test and verify Telegram Bot API connection
+ * Checks:
+ * 1. Bot token validity via /getMe
+ * 2. Ability to send a test message to TELEGRAM_CHAT_ID via /sendMessage
+ * 3. Current Webhook status via /getWebhookInfo
+ * 
+ * Returns an object with test results.
+ */
+function checkTelegramConnection() {
+    const token = getTelegramApiKey() || TELEGRAM_BOT_TOKEN;
+    const chatId = getTelegramChatId() || TELEGRAM_CHAT_ID;
+
+    const results = {
+        success: false,
+        botInfo: null,
+        messageSent: false,
+        webhookInfo: null,
+        errors: []
+    };
+
+    if (!token) {
+        results.errors.push("TELEGRAM_BOT_TOKEN is not configured in Script Properties.");
+        Logger.log("❌ Connection Check Failed: TELEGRAM_BOT_TOKEN missing.");
+        return results;
+    }
+
+    // Step 1: Test Bot Token via /getMe
+    try {
+        const getMeUrl = "https://api.telegram.org/bot" + token + "/getMe";
+        const res = UrlFetchApp.fetch(getMeUrl, { muteHttpExceptions: true });
+        const data = JSON.parse(res.getContentText());
+        
+        if (data.ok) {
+            results.botInfo = data.result;
+            Logger.log("✅ Bot Verified: @" + data.result.username + " (" + data.result.first_name + ")");
+        } else {
+            results.errors.push("Bot token error: " + (data.description || "Invalid token"));
+            Logger.log("❌ Bot Token Verification Failed: " + res.getContentText());
+            return results;
+        }
+    } catch (err) {
+        results.errors.push("Failed to connect to Telegram getMe API: " + err.toString());
+        Logger.log("❌ Network/API Error on getMe: " + err.toString());
+        return results;
+    }
+
+    // Step 2: Test sending a message to TELEGRAM_CHAT_ID
+    if (!chatId) {
+        results.errors.push("TELEGRAM_CHAT_ID is not configured in Script Properties.");
+        Logger.log("⚠️ TELEGRAM_CHAT_ID missing. Skipping test message.");
+    } else {
+        const testMsg = "🤖 <b>Kiểm tra kết nối Telegram Bot</b>\n\n✅ Bot kết nối thành công với Google Apps Script!\n⏰ Thời gian: " + new Date().toLocaleString("vi-VN");
+        const sent = sendTelegramMessage(testMsg);
+        results.messageSent = sent;
+        if (!sent) {
+            results.errors.push("Không thể gửi tin nhắn thử tới Telegram Chat ID: " + chatId);
+        }
+    }
+
+    // Step 3: Check Webhook Info via /getWebhookInfo
+    try {
+        const getWebhookUrl = "https://api.telegram.org/bot" + token + "/getWebhookInfo";
+        const res = UrlFetchApp.fetch(getWebhookUrl, { muteHttpExceptions: true });
+        const data = JSON.parse(res.getContentText());
+        if (data.ok) {
+            results.webhookInfo = data.result;
+        }
+    } catch (err) {
+        Logger.log("⚠️ Error fetching webhook info: " + err.toString());
+    }
+
+    results.success = (results.botInfo !== null) && (chatId ? results.messageSent : true);
+    return results;
 }
 
 // Function to set webhook for Telegram

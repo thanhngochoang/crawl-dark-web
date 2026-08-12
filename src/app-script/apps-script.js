@@ -4,6 +4,46 @@
  */
 
 
+// Web app function for GET requests (Health Check & Diagnostics)
+function doGet(e) {
+  try {
+    const token = getTelegramApiKey();
+    const chatId = getTelegramChatId();
+    const spreadsheetId = getSpreadsheetId();
+    const geminiKey = getGeminiApiKey();
+    const deployedUrl = getDeployedUrl();
+
+    let webhookInfo = null;
+    if (token) {
+      try {
+        const res = UrlFetchApp.fetch("https://api.telegram.org/bot" + token + "/getWebhookInfo", { muteHttpExceptions: true });
+        const json = JSON.parse(res.getContentText());
+        webhookInfo = json.ok ? json.result : { error: json.description };
+      } catch (err) {
+        webhookInfo = { error: err.toString() };
+      }
+    }
+
+    const diagnostics = {
+      status: "online",
+      timestamp: new Date().toISOString(),
+      scriptProperties: {
+        TELEGRAM_BOT_TOKEN: token ? `Configured (Length: ${token.length})` : "MISSING ❌",
+        TELEGRAM_CHAT_ID: chatId ? chatId : "MISSING ❌",
+        GEMINI_API_KEY: geminiKey ? "Configured" : "MISSING ❌",
+        SPREADSHEET_ID: spreadsheetId ? spreadsheetId : "MISSING ❌",
+        DEPLOYED_URL: deployedUrl ? deployedUrl : "Not set in properties"
+      },
+      telegramWebhookStatus: webhookInfo
+    };
+
+    return ContentService.createTextOutput(JSON.stringify(diagnostics, null, 2))
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput("Error running diagnostics: " + err.toString());
+  }
+}
+
 // Web app function for POST requests (Telegram webhook)
 function doPost(e) {
   try {
@@ -14,7 +54,29 @@ function doPost(e) {
     const update = JSON.parse(e.postData.contents);
 
     // Verify authorized user/chat
-    if (update.message && String(update.message.chat.id) === String(TELEGRAM_CHAT_ID)) {
+    if (update.message) {
+      const incomingChatId = String(update.message.chat.id);
+      const expectedChatId = String(getTelegramChatId() || TELEGRAM_CHAT_ID);
+
+      if (expectedChatId && incomingChatId !== expectedChatId) {
+        Logger.log(`⚠️ Chat ID mismatch. Incoming: ${incomingChatId}, Expected: ${expectedChatId}`);
+        // Notify sender about Chat ID mismatch so they can set TELEGRAM_CHAT_ID
+        const token = getTelegramApiKey() || TELEGRAM_BOT_TOKEN;
+        if (token) {
+          UrlFetchApp.fetch("https://api.telegram.org/bot" + token + "/sendMessage", {
+            method: "post",
+            contentType: "application/json",
+            payload: JSON.stringify({
+              chat_id: incomingChatId,
+              text: `⚠️ <b>Chat ID không khớp</b>\n\nChat ID của bạn: <code>${incomingChatId}</code>\nChat ID đã cấu hình: <code>${expectedChatId}</code>\n\nVui lòng cập nhật <code>TELEGRAM_CHAT_ID</code> trong Script Properties thành <code>${incomingChatId}</code>.`,
+              parse_mode: "HTML"
+            }),
+            muteHttpExceptions: true
+          });
+        }
+        return ContentService.createTextOutput("OK");
+      }
+
       const text = update.message.text;
 
       if (text) {
@@ -64,11 +126,36 @@ function onOpen() {
   try {
     const ui = SpreadsheetApp.getUi();
     ui.createMenu('🤖 Telegram Bot')
+      .addItem('🧪 Kiểm tra kết nối Telegram', 'promptTestTelegramConnection')
       .addItem('🔗 Cập nhật Webhook (Auto / Manual)', 'promptUpdateWebhook')
       .addItem('⚙️ Kiểm tra Webhook hiện tại', 'checkTelegramWebhookStatus')
       .addToUi();
   } catch (e) {
     // Menu creation fails gracefully if script is not bound to a spreadsheet UI container
+  }
+}
+
+/**
+ * Kiểm tra toàn bộ kết nối Telegram API và gửi tin nhắn test từ Google Sheets UI
+ */
+function promptTestTelegramConnection() {
+  const ui = SpreadsheetApp.getUi();
+  const res = checkTelegramConnection();
+
+  if (res.success) {
+    const botName = res.botInfo ? `${res.botInfo.first_name} (@${res.botInfo.username})` : 'N/A';
+    const webhookUrl = res.webhookInfo && res.webhookInfo.url ? res.webhookInfo.url : 'Chưa cấu hình';
+    const pendingMsg = res.webhookInfo ? res.webhookInfo.pending_update_count : 0;
+
+    const msg = `✅ KẾT NỐI TELEGRAM THÀNH CÔNG!\n\n` +
+                `🤖 Bot Name: ${botName}\n` +
+                `📲 Gửi tin nhắn test: ${res.messageSent ? 'Thành công (Đã gửi tới Chat ID)' : 'Thất bại'}\n` +
+                `🌐 Webhook URL: ${webhookUrl}\n` +
+                `📩 Tin nhắn đang chờ: ${pendingMsg}`;
+    ui.alert('🎉 Kiểm Tra Kết Nối', msg, ui.ButtonSet.OK);
+  } else {
+    const errorMsg = res.errors.length > 0 ? res.errors.join('\n- ') : 'Không xác định được nguyên nhân.';
+    ui.alert('❌ Kết Nối Thất Bại', 'Chi tiết lỗi:\n- ' + errorMsg, ui.ButtonSet.OK);
   }
 }
 
