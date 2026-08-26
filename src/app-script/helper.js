@@ -146,7 +146,80 @@ Phản hồi của bạn phải là một đối tượng JSON HỢP LỆ và KH
 function makeTheRule(query, returnPromptOnly = false) {
     const prompt = buildPrompt(query);
     if (returnPromptOnly) return prompt;
-    return callGemini(prompt);
+
+    // 1. Ưu tiên sử dụng Cloudflare Workers AI (Miễn phí 10,000 req/ngày & Không bị Safety Block)
+    if (getCloudflareAccountId() && getCloudflareApiToken()) {
+        return callCloudflareAI(query);
+    }
+
+    // 2. Fallback sang Google Gemini nếu có GEMINI_API_KEY
+    if (getGeminiApiKey()) {
+        return callGemini(prompt);
+    }
+
+    Logger.log("❌ Chưa cấu hình API AI (CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN hoặc GEMINI_API_KEY).");
+    sendTelegramMessage("⚠️ Chưa cấu hình API AI trong Script Properties (Cloudflare Workers AI hoặc Gemini).");
+    return null;
+}
+
+function callCloudflareAI(query) {
+    const accountId = getCloudflareAccountId() || CLOUDFLARE_ACCOUNT_ID;
+    const apiToken = getCloudflareApiToken() || CLOUDFLARE_API_TOKEN;
+    const model = getCloudflareModel() || CLOUDFLARE_MODEL || "@cf/qwen/qwen2.5-7b-instruct";
+
+    const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${model}`;
+    const prompt = buildPrompt(query);
+
+    const payload = {
+        messages: [
+            {
+                role: "system",
+                content: "Bạn là một AI chuyên phân tích ngôn ngữ tự nhiên tiếng Việt và chuyển đổi sang JSON rule lọc dữ liệu chính xác theo schema được yêu cầu. Phản hồi DUY NHẤT một đối tượng JSON hợp lệ, KHÔNG bao bọc trong markdown code block, KHÔNG kèm lời giải thích."
+            },
+            {
+                role: "user",
+                content: prompt
+            }
+        ],
+        temperature: 0.1,
+        max_tokens: 1024
+    };
+
+    const options = {
+        method: "post",
+        contentType: "application/json",
+        headers: {
+            "Authorization": `Bearer ${apiToken}`
+        },
+        payload: JSON.stringify(payload),
+        muteHttpExceptions: true
+    };
+
+    try {
+        const response = UrlFetchApp.fetch(url, options);
+        const resText = response.getContentText();
+        Logger.log("Cloudflare AI raw response: " + resText);
+
+        const result = JSON.parse(resText);
+
+        if (result.success && result.result) {
+            let aiResponse = result.result.response || "";
+            aiResponse = aiResponse
+                .replace(/```json\s*/gi, "")
+                .replace(/```\s*/gi, "")
+                .trim();
+            return aiResponse;
+        } else {
+            const errMsg = (result.errors && result.errors.length > 0) ? result.errors[0].message : "Unknown Cloudflare AI error";
+            Logger.log("Cloudflare AI Error: " + errMsg);
+            sendTelegramMessage("🤖 Cloudflare AI Error: " + errMsg);
+            return null;
+        }
+    } catch (error) {
+        Logger.log("Error querying Cloudflare AI: " + error.toString());
+        sendTelegramMessage("⚠️ Lỗi khi kết nối Cloudflare AI: " + error.toString());
+        return null;
+    }
 }
 
 function callGemini(prompt) {
@@ -216,6 +289,7 @@ if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
         makeTheRule,
         buildPrompt,
+        callCloudflareAI,
         callGemini
     };
 }

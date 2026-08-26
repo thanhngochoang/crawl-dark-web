@@ -11,6 +11,9 @@ function doGet(e) {
     const chatId = getTelegramChatId();
     const spreadsheetId = getSpreadsheetId();
     const geminiKey = getGeminiApiKey();
+    const cfAccountId = getCloudflareAccountId();
+    const cfApiToken = getCloudflareApiToken();
+    const cfModel = getCloudflareModel();
     const deployedUrl = getDeployedUrl();
 
     let webhookInfo = null;
@@ -30,7 +33,8 @@ function doGet(e) {
       scriptProperties: {
         TELEGRAM_BOT_TOKEN: token ? `Configured (Length: ${token.length})` : "MISSING ❌",
         TELEGRAM_CHAT_ID: chatId ? chatId : "MISSING ❌",
-        GEMINI_API_KEY: geminiKey ? "Configured" : "MISSING ❌",
+        CLOUDFLARE_WORKERS_AI: cfAccountId && cfApiToken ? `Configured ✅ (Model: ${cfModel})` : "Not configured (Optional)",
+        GEMINI_API_KEY: geminiKey ? "Configured ✅" : "Not configured (Optional)",
         SPREADSHEET_ID: spreadsheetId ? spreadsheetId : "MISSING ❌",
         DEPLOYED_URL: deployedUrl ? deployedUrl : "Not set in properties"
       },
