@@ -1,7 +1,10 @@
-name: Manual Scrape
+name: Scrape Data
 
 on:
   workflow_dispatch:
+  schedule:
+    # Chạy lúc 08:00 AM (giờ Việt Nam, tức 01:00 UTC) vào thứ 3 và thứ 5 hàng tuần
+    - cron: '0 1 * * 2,4'
 
 jobs:
   scrape:
