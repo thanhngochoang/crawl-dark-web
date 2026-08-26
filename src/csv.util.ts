@@ -236,14 +236,253 @@ export function readCsvToObjects<T>(filePath: string, config: CsvConfig<T>): Par
 }
 
 // Helper function to get all data from a sheet
-async function getSheetData(sheetName: string): Promise<string[][]> {
+export async function getSheetData(sheetName: string): Promise<string[][]> {
     const sheets = getSheetsClient();
     if (!sheets || !spreadsheetId) return [];
-    const response = await sheets.spreadsheets.values.get({
-        spreadsheetId,
-        range: `'${sheetName}'`,
+    try {
+        const response = await sheets.spreadsheets.values.get({
+            spreadsheetId,
+            range: `'${sheetName}'`,
+        });
+        return response.data.values || [];
+    } catch (error) {
+        return [];
+    }
+}
+
+export function normalizeUrl(url: string | null | undefined): string {
+    if (!url) return '';
+    return String(url).trim().toLowerCase().replace(/\/+$/, '');
+}
+
+export function hasValidPhone(phone: string | null | undefined): boolean {
+    if (!phone) return false;
+    const cleaned = String(phone).replace(/[^\d+]/g, "").trim();
+    return cleaned.length >= 7;
+}
+
+export function parseCsvLine(line: string): string[] {
+    const result: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        if (char === '"') {
+            if (inQuotes && line[i + 1] === '"') {
+                current += '"';
+                i++;
+            } else {
+                inQuotes = !inQuotes;
+            }
+        } else if (char === ',' && !inQuotes) {
+            result.push(current.trim());
+            current = '';
+        } else {
+            current += char;
+        }
+    }
+    result.push(current.trim());
+    return result;
+}
+
+export function upsertRecords<T>(
+    existingHeaders: string[],
+    existingRows: string[][],
+    newRecords: T[],
+    config: CsvConfig<T>
+): { headers: string[]; rows: string[][]; stats: { total: number; updated: number; added: number; active: number; inactive: number } } {
+    const keys = Object.keys(config) as (keyof T)[];
+    let headers = [...existingHeaders];
+
+    if (headers.length === 0) {
+        headers = keys.map(k => config[k]?.header || String(k));
+    }
+
+    for (const key of keys) {
+        const headerName = config[key]?.header || String(key);
+        if (!headers.includes(headerName)) {
+            headers.push(headerName);
+        }
+    }
+
+    const urlHeader = (config as any).URL?.header || 'URL';
+    const phoneHeader = (config as any).SoDienThoai?.header || 'Số điện thoại';
+    const statusHeader = (config as any).TrangThai?.header || 'Trạng thái';
+
+    const urlIdx = headers.indexOf(urlHeader);
+    const phoneIdx = headers.indexOf(phoneHeader);
+    const statusIdx = headers.indexOf(statusHeader);
+
+    const rows = existingRows.map(r => {
+        const rowCopy = [...r];
+        while (rowCopy.length < headers.length) {
+            rowCopy.push('');
+        }
+        return rowCopy;
     });
-    return response.data.values || [];
+
+    const urlToRowIndex = new Map<string, number>();
+    rows.forEach((row, idx) => {
+        const url = normalizeUrl(row[urlIdx]);
+        if (url) {
+            urlToRowIndex.set(url, idx);
+        }
+    });
+
+    let updatedCount = 0;
+    let addedCount = 0;
+
+    for (const item of newRecords) {
+        const itemObj = item as any;
+        const normUrl = normalizeUrl(itemObj.URL);
+        if (!normUrl) continue;
+
+        const itemHasPhone = hasValidPhone(itemObj.SoDienThoai);
+        const itemStatus = itemObj.TrangThai || (itemHasPhone ? 'active' : 'inactive');
+
+        if (urlToRowIndex.has(normUrl)) {
+            const rowIndex = urlToRowIndex.get(normUrl)!;
+            const row = rows[rowIndex];
+            updatedCount++;
+
+            // 1. Cập nhật số điện thoại nếu dữ liệu cũ chưa có mà lần crawl này có
+            const existingPhone = row[phoneIdx];
+            if (!hasValidPhone(existingPhone) && itemHasPhone) {
+                const formatter = (config as any).SoDienThoai?.formatter;
+                row[phoneIdx] = formatter ? formatter(itemObj.SoDienThoai) : String(itemObj.SoDienThoai ?? "");
+            }
+
+            // 2. Cập nhật trạng thái active / inactive theo kết quả ngày hôm nay
+            if (statusIdx !== -1) {
+                row[statusIdx] = itemStatus;
+            }
+
+            // 3. Cập nhật các trường thông tin khác nếu trước đó chưa có hoặc có giá trị mới
+            for (const key of keys) {
+                if (key === 'URL' || key === 'SoDienThoai' || key === 'TrangThai') continue;
+                const hName = config[key]?.header || String(key);
+                const colIdx = headers.indexOf(hName);
+                if (colIdx !== -1 && itemObj[key]) {
+                    const formatter = config[key]?.formatter;
+                    const val = formatter ? formatter(itemObj[key]) : String(itemObj[key] ?? "");
+                    if (val && !row[colIdx]) {
+                        row[colIdx] = val;
+                    }
+                }
+            }
+        } else {
+            addedCount++;
+            const newRow = headers.map(h => {
+                const key = keys.find(k => (config[k]?.header || String(k)) === h);
+                if (!key) return '';
+                if (key === 'TrangThai') return itemStatus;
+                const rawVal = itemObj[key];
+                const formatter = config[key]?.formatter;
+                return formatter ? formatter(rawVal) : String(rawVal ?? "");
+            });
+            rows.push(newRow);
+            urlToRowIndex.set(normUrl, rows.length - 1);
+        }
+    }
+
+    let activeCount = 0;
+    let inactiveCount = 0;
+    if (statusIdx !== -1) {
+        rows.forEach(r => {
+            if (r[statusIdx] === 'active') activeCount++;
+            else inactiveCount++;
+        });
+    }
+
+    return {
+        headers,
+        rows,
+        stats: {
+            total: rows.length,
+            updated: updatedCount,
+            added: addedCount,
+            active: activeCount,
+            inactive: inactiveCount
+        }
+    };
+}
+
+export async function saveOrUpdateAllData<T>(
+    config: CsvConfig<T>,
+    results: T[],
+    sheetName: string = "AllData"
+) {
+    const keys = Object.keys(config) as (keyof T)[];
+    const defaultHeaders = keys.map((k) => config[k]?.header || String(k));
+
+    const sheets = getSheetsClient();
+    let existingHeaders: string[] = [];
+    let existingRows: string[][] = [];
+
+    // 1. Đọc dữ liệu hiện có từ Google Sheets (nếu có cấu hình)
+    if (sheets && spreadsheetId) {
+        await ensureSheetExists(sheetName, defaultHeaders);
+        const sheetData = await getSheetData(sheetName);
+        if (sheetData && sheetData.length > 0) {
+            existingHeaders = sheetData[0];
+            existingRows = sheetData.slice(1);
+        }
+    } else {
+        // Fallback: Đọc từ file master CSV local nếu có
+        const masterCsvPath = path.resolve(`export_escort_data_${sheetName}.csv`);
+        if (fs.existsSync(masterCsvPath)) {
+            const rawContent = fs.readFileSync(masterCsvPath, "utf8").replace(/^\uFEFF/, "").trim();
+            if (rawContent) {
+                const lines = rawContent.split("\n").map(l => l.trim()).filter(Boolean);
+                if (lines.length > 0) {
+                    existingHeaders = parseCsvLine(lines[0]);
+                    existingRows = lines.slice(1).map(parseCsvLine);
+                }
+            }
+        }
+    }
+
+    // 2. Thực hiện upsert / merge dữ liệu
+    const { headers, rows, stats } = upsertRecords(existingHeaders, existingRows, results, config);
+
+    // 3. Ghi ra file CSV Master AllData
+    const masterCsvPath = path.resolve(`export_escort_data_${sheetName}.csv`);
+    const csvContent = [
+        headers.map(h => `"${String(h).replace(/"/g, '""')}"`).join(","),
+        ...rows.map(row => row.map(val => `"${String(val ?? "").replace(/"/g, '""')}"`).join(","))
+    ].join("\n");
+    fs.writeFileSync(masterCsvPath, "\uFEFF" + csvContent, "utf8");
+    console.log(`✅ Saved master CSV: ${masterCsvPath} (Total: ${stats.total} | Added: ${stats.added} | Updated: ${stats.updated} | Active: ${stats.active} | Inactive: ${stats.inactive})`);
+
+    // Ghi thêm bản snapshot ngày để backup
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const dailyCsvPath = path.resolve(`export_escort_data_${todayStr}.csv`);
+    fs.writeFileSync(dailyCsvPath, "\uFEFF" + csvContent, "utf8");
+
+    // 4. Đồng bộ lên Google Sheets sheet AllData
+    if (sheets && spreadsheetId && sheetName) {
+        try {
+            await ensureSheetExists(sheetName, headers);
+            const values = [headers, ...rows];
+
+            // Xóa sạch vùng cũ và ghi đè trọn vẹn AllData (chỉ 2 API calls nhanh và chuẩn)
+            await sheets.spreadsheets.values.clear({
+                spreadsheetId,
+                range: `'${sheetName}'`,
+            });
+            await sheets.spreadsheets.values.update({
+                spreadsheetId,
+                range: `'${sheetName}'!A1`,
+                valueInputOption: 'RAW',
+                requestBody: { values },
+            });
+            console.log(`✅ Synced to Google Sheets [${sheetName}]: Total ${stats.total} rows (${stats.added} new, ${stats.updated} updated, ${stats.active} active, ${stats.inactive} inactive)`);
+        } catch (error) {
+            console.error('Error syncing Google Sheets:', error);
+        }
+    }
+
+    return { headers, rows, stats };
 }
 
 // Function to update master sheet from daily sheet, adding only new records based on URL uniqueness
@@ -252,10 +491,8 @@ export async function updateMasterFromDaily(dailySheetName: string, masterSheetN
     if (!sheets || !spreadsheetId) return;
 
     try {
-        // Ensure master sheet exists
         await ensureSheetExists(masterSheetName);
 
-        // Get data from both sheets
         const dailyData = await getSheetData(dailySheetName);
         const masterData = await getSheetData(masterSheetName);
 
@@ -264,7 +501,6 @@ export async function updateMasterFromDaily(dailySheetName: string, masterSheetN
             return;
         }
 
-        // If master is empty, copy all daily data
         if (masterData.length === 0) {
             await sheets.spreadsheets.values.update({
                 spreadsheetId,
@@ -276,7 +512,6 @@ export async function updateMasterFromDaily(dailySheetName: string, masterSheetN
             return;
         }
 
-        // Assume first row is headers
         const headers = dailyData[0];
         const urlIndex = headers.findIndex(h => h.toLowerCase() === 'url');
         if (urlIndex === -1) {
@@ -284,12 +519,10 @@ export async function updateMasterFromDaily(dailySheetName: string, masterSheetN
             return;
         }
 
-        // Create set of existing URLs from master sheet (skip header)
         const masterUrls = new Set(
             masterData.slice(1).map(row => row[urlIndex]).filter(url => url && url.trim())
         );
 
-        // Filter daily records where URL doesn't exist in master
         const newRecords = dailyData.slice(1).filter(row => {
             const url = row[urlIndex];
             return url && url.trim() && !masterUrls.has(url);
@@ -300,7 +533,6 @@ export async function updateMasterFromDaily(dailySheetName: string, masterSheetN
             return;
         }
 
-        // Append new records to master sheet
         await sheets.spreadsheets.values.append({
             spreadsheetId,
             range: `'${masterSheetName}'!A:A`,

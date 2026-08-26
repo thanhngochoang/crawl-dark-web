@@ -1,10 +1,14 @@
-
 // Function to get data from a specific sheet
 function getSheetData(sheetName) {
     const targetName = sheetName || getSheetName();
     const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-    const sheet = spreadsheet ? spreadsheet.getSheetByName(targetName) : null;
+    let sheet = spreadsheet ? spreadsheet.getSheetByName(targetName) : null;
     
+    if (!sheet && spreadsheet) {
+        // Fallback to active sheet or first sheet if AllData not found
+        sheet = spreadsheet.getSheetByName("AllData") || spreadsheet.getActiveSheet() || spreadsheet.getSheets()[0];
+    }
+
     if (!sheet) {
         Logger.log(`Sheet "${targetName}" not found.`);
         return [];
@@ -31,8 +35,6 @@ function getSheetData(sheetName) {
                     value = parseInt(value, 10) || 0;
                     break;
                 case "Cân Nặng":
-                    value = parseFloat(String(value).replace(/[^\d.]/g, ""));
-                    break;
                 case "Chiều Cao":
                     value = parseFloat(String(value).replace(/[^\d.]/g, ""));
                     break;
@@ -92,10 +94,6 @@ function parseThreeSizes(val) {
 
 // Sheet configuration
 function getSheetName() {
-    const today = new Date();
-    const year = today.getFullYear();
-    const month = String(today.getMonth() + 1).padStart(2, "0");
-    const day = String(today.getDate()).padStart(2, "0");
-    return `${year}-${month}-${day}`;
+    return "AllData";
 }
 const SHEET_NAME = getSheetName()

@@ -48,6 +48,7 @@ Yêu cầu:
 - "Số đồ 3 vòng.bust"
 - "Số đồ 3 vòng.hip"
 - "Địa chỉ"
+- "Trạng thái"
 
 ---
 

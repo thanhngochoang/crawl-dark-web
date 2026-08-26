@@ -235,6 +235,7 @@ export const scrapeEscortPage = async function (link: string, browser: BrowserCo
           .filter(Boolean);
       }
 
+      result.TrangThai = result.SoDienThoai && result.SoDienThoai.trim() !== "" ? "active" : "inactive";
       return result;
     });
 
@@ -255,7 +256,8 @@ export const scrapeEscortPage = async function (link: string, browser: BrowserCo
       KhuVuc: "",
       DiaChi: "",
       DichVu: [],
-      Images: []
+      Images: [],
+      TrangThai: "inactive"
     };
   } finally {
     await page.close();
@@ -267,7 +269,7 @@ export const csvMapping: CsvConfig<EscortData> = {
   Gia: { header: "Giá" },
   SoDienThoai: {
     header: "Số điện thoại",
-    formatter: (value) => " '" + String(value ?? "") + " "
+    formatter: (value) => (value && String(value).trim()) ? " '" + String(value).trim() + " " : ""
   },
   NamSinh: { header: "Năm Sinh" },
   NgayTao: { header: "Ngày Tạo" },
@@ -277,21 +279,27 @@ export const csvMapping: CsvConfig<EscortData> = {
   ChieuCao: { header: "Chiều Cao" },
   XuatXu: { header: "Xuất xứ" },
   SoDo3Vong: { header: "Số đồ 3 vòng" },
-  DiaChi: { header: "Địa chỉ" }
+  DiaChi: { header: "Địa chỉ" },
+  TrangThai: { header: "Trạng thái" }
 };
 
-export const readAll = async (browser: BrowserContext | Browser, batchSize: number, uniqueLinks: string[]) => {
+export const readAll = async (
+  browser: BrowserContext | Browser,
+  batchSize: number,
+  uniqueLinks: string[],
+  dailySheetName?: string
+) => {
   const results: EscortData[] = [];
-  const sheetName = getSheetName();
-  await ensureSheetExists(sheetName);
+  const targetDailySheet = dailySheetName || getSheetName();
+  await ensureSheetExists(targetDailySheet);
 
   for (const link of uniqueLinks) {
     if (batchSize <= 0) break;
     batchSize--;
     console.log(`Scraping [${uniqueLinks.indexOf(link) + 1}:${uniqueLinks.length}] ${link}`);
     const data = await scrapeEscortPage(link, browser);
-    await appendToCSV('log', csvMapping, [data], sheetName);
-    data.SoDienThoai && results.push(data);
+    await appendToCSV('log', csvMapping, [data], targetDailySheet);
+    results.push(data);
     const delay = getRandomDelay();
     console.log(`[AntiSpam] Waiting ${delay}ms before next request...`);
     await sleep(delay);

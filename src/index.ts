@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { chromium } from "playwright";
 import { csvMapping, nextPage, readAll, readCsv, sleep, getSheetName, configureAntiSpam, getRandomDelay, navigateWithRetry } from "./util";
-import { saveToCSV, ensureSheetExists } from "./csv.util";
+import { saveOrUpdateAllData, ensureSheetExists } from "./csv.util";
 
 export const base_Url = process.env.BASE_URL;
 
@@ -28,11 +28,14 @@ async function main(urlArg?: string): Promise<void> {
     let pageIndex = 1;
     const csvData = [];
 
-    // Ensure the sheet exists before starting
+    // Ensure both sheets exist before starting
     const keys = Object.keys(csvMapping) as (keyof typeof csvMapping)[];
     const headers = keys.map((k) => csvMapping[k]?.header).filter((h): h is string => h !== undefined);
-    const sheetName = "AllData";
-    await ensureSheetExists(sheetName, headers);
+    const masterSheetName = "AllData";
+    const dailySheetName = getSheetName();
+
+    await ensureSheetExists(masterSheetName, headers);
+    await ensureSheetExists(dailySheetName, headers);
     while (true) {
         const pageUrl = baseUrl + nextPage(pageIndex);
         console.log(`[AntiSpam] Navigating to list page ${pageIndex}: ${pageUrl}`);
@@ -59,13 +62,13 @@ async function main(urlArg?: string): Promise<void> {
 
         const uniqueLinks = [...new Set(links)];
         console.log(`Found ${uniqueLinks.length} detail links on page ${pageIndex}`);
-        const results = await readAll(context, 1000, uniqueLinks);
+        const results = await readAll(context, 1000, uniqueLinks, dailySheetName);
         csvData.push(...results);
         pageIndex++;
         if (!(results.length >= 1)) break;
     }
 
-    await saveToCSV("export", csvMapping, csvData, sheetName);
+    await saveOrUpdateAllData(csvMapping, csvData, masterSheetName);
     await browser.close();
 }
 

@@ -14,6 +14,7 @@ export interface EscortData {
   DiaChi: string;
   DichVu: string[];
   Images: string[];
+  TrangThai?: string;
 }
 
 export type CsvConfig<T> = Partial<Record<keyof T, { header: string; formatter?: (value: any) => string }>>;
