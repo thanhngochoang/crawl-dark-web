@@ -149,16 +149,17 @@ function makeTheRule(query, returnPromptOnly = false) {
 
     // 1. Ưu tiên sử dụng Cloudflare Workers AI (Miễn phí 10,000 req/ngày & Không bị Safety Block)
     if (getCloudflareAccountId() && getCloudflareApiToken()) {
-        return callCloudflareAI(query);
+        const cfResult = callCloudflareAI(query);
+        if (cfResult) return cfResult;
     }
 
     // 2. Fallback sang Google Gemini nếu có GEMINI_API_KEY
     if (getGeminiApiKey()) {
-        return callGemini(prompt);
+        const geminiResult = callGemini(prompt);
+        if (geminiResult) return geminiResult;
     }
 
-    Logger.log("❌ Chưa cấu hình API AI (CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN hoặc GEMINI_API_KEY).");
-    sendTelegramMessage("⚠️ Chưa cấu hình API AI trong Script Properties (Cloudflare Workers AI hoặc Gemini).");
+    Logger.log("❌ Không thể tạo rule từ AI (Cloudflare hoặc Gemini không trả về kết quả hợp lệ).");
     return null;
 }
 
@@ -166,6 +167,11 @@ function callCloudflareAI(query) {
     const accountId = getCloudflareAccountId() || CLOUDFLARE_ACCOUNT_ID;
     const apiToken = getCloudflareApiToken() || CLOUDFLARE_API_TOKEN;
     const model = getCloudflareModel() || CLOUDFLARE_MODEL || "@cf/qwen/qwen2.5-7b-instruct";
+
+    if (!accountId || !apiToken) {
+        Logger.log("⚠️ Cloudflare credentials missing.");
+        return null;
+    }
 
     const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${model}`;
     const prompt = buildPrompt(query);
@@ -198,8 +204,6 @@ function callCloudflareAI(query) {
     try {
         const response = UrlFetchApp.fetch(url, options);
         const resText = response.getContentText();
-        Logger.log("Cloudflare AI raw response: " + resText);
-
         const result = JSON.parse(resText);
 
         if (result.success && result.result) {
@@ -212,18 +216,18 @@ function callCloudflareAI(query) {
         } else {
             const errMsg = (result.errors && result.errors.length > 0) ? result.errors[0].message : "Unknown Cloudflare AI error";
             Logger.log("Cloudflare AI Error: " + errMsg);
-            sendTelegramMessage("🤖 Cloudflare AI Error: " + errMsg);
             return null;
         }
     } catch (error) {
         Logger.log("Error querying Cloudflare AI: " + error.toString());
-        sendTelegramMessage("⚠️ Lỗi khi kết nối Cloudflare AI: " + error.toString());
         return null;
     }
 }
 
 function callGemini(prompt) {
     const apiKey = getGeminiApiKey();
+    if (!apiKey) return null;
+
     const modelName = 'gemini-2.5-flash';
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
     const payload = {
@@ -245,25 +249,19 @@ function callGemini(prompt) {
         const response = UrlFetchApp.fetch(url, options);
         const result = JSON.parse(response.getContentText());
 
-        // 1. Check for API-level errors
         if (result.error) {
-            const errorMessage = `API Error: ${result.error.message}`;
-            Logger.log(errorMessage);
-            sendTelegramMessage("🤖 Gemini Error: " + errorMessage);
+            Logger.log(`Gemini API Error: ${result.error.message}`);
             return null;
         }
 
-        // 2. Check for candidates (successful generation)
         if (result.candidates && result.candidates.length > 0) {
             const candidate = result.candidates[0];
 
-            // 3. Check for blocked content
             if (candidate.finishReason === 'SAFETY') {
-                sendTelegramMessage("🚫 Câu hỏi bị chặn do thiết lập an toàn. Vui lòng thử lại với câu hỏi khác.");
+                Logger.log("Gemini prompt blocked due to safety settings.");
                 return null;
             }
 
-            // 4. Extract the text & clean Markdown code blocks
             let aiResponse = candidate.content.parts[0].text || "";
             aiResponse = aiResponse
                 .replace(/```json\s*/gi, "")
@@ -271,16 +269,11 @@ function callGemini(prompt) {
                 .trim();
 
             return aiResponse;
-
-        } else {
-            Logger.log("Gemini Error: Received an empty response.");
-            sendTelegramMessage("🤖 Gemini Error: Phản hồi trống hoặc không hợp lệ.");
-            return null;
         }
+        return null;
 
     } catch (error) {
         Logger.log("Error querying Gemini: " + error.toString());
-        sendTelegramMessage("⚠️ Lỗi khi kết nối với Gemini: " + error.toString());
         return null;
     }
 }
