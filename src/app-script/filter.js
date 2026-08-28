@@ -116,12 +116,23 @@ const OPERATORS = {
 
 function filterValidPhoneData(data) {
     if (!Array.isArray(data)) return [];
+    const seen = new Set();
+    const result = [];
 
-    return data.filter(item => {
-        const phone = (item["Số điện thoại"] || "").trim().replace("'", "");
+    for (const item of data) {
+        if (!item) continue;
+        const rawPhone = item["Số điện thoại"] || "";
+        const phone = String(rawPhone).replace(/[^\d+]/g, "").trim();
 
-        return phone !== "";
-    });
+        if (phone.length >= 7) {
+            if (!seen.has(phone)) {
+                seen.add(phone);
+                result.push(item);
+            }
+        }
+    }
+
+    return result;
 }
 
 function matchFilter(item, filter) {

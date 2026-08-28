@@ -50,89 +50,111 @@ function doGet(e) {
 
 // Web app function for POST requests (Telegram webhook)
 function doPost(e) {
+  let lock = null;
   try {
     if (!e || !e.postData || !e.postData.contents) {
       return ContentService.createTextOutput("OK");
     }
 
-    const update = JSON.parse(e.postData.contents);
-
-    // 1. Chống lặp tin nhắn khi Telegram retry (Deduplicate update_id)
-    if (update.update_id) {
-      const cache = CacheService.getScriptCache();
-      const cacheKey = "TG_UPDATE_" + update.update_id;
-      if (cache) {
-        if (cache.get(cacheKey)) {
-          Logger.log(`Duplicate update_id ${update.update_id} received. Skipping to prevent loop.`);
-          return ContentService.createTextOutput("OK");
-        }
-        cache.put(cacheKey, "1", 300); // Lưu 5 phút
+    // 1. Đồng bộ hóa xử lý webhook bằng LockService để chống xử lý đồng thời khi Telegram retry
+    if (typeof LockService !== 'undefined' && LockService.getScriptLock) {
+      lock = LockService.getScriptLock();
+      try {
+        lock.tryLock(15000); // Đợi tối đa 15 giây
+      } catch (lockErr) {
+        Logger.log("Lock acquisition warning: " + lockErr);
       }
     }
 
-    // 2. Kiểm tra message
-    if (update.message) {
-      const incomingChatId = String(update.message.chat.id);
-      const expectedChatId = String(getTelegramChatId() || TELEGRAM_CHAT_ID);
+    const update = JSON.parse(e.postData.contents);
+    const updateId = update.update_id;
+    const message = update.message || update.edited_message;
 
-      if (expectedChatId && incomingChatId !== expectedChatId) {
-        Logger.log(`⚠️ Chat ID mismatch. Incoming: ${incomingChatId}, Expected: ${expectedChatId}`);
-        // Chống spam thông báo mismatch: chỉ gửi 1 lần mỗi 10 phút
-        const cache = CacheService.getScriptCache();
-        const mismatchCacheKey = "MISMATCH_NOTIFY_" + incomingChatId;
-        if (cache && !cache.get(mismatchCacheKey)) {
-          cache.put(mismatchCacheKey, "1", 600);
-          const token = getTelegramApiKey() || TELEGRAM_BOT_TOKEN;
-          if (token) {
-            UrlFetchApp.fetch("https://api.telegram.org/bot" + token + "/sendMessage", {
-              method: "post",
-              contentType: "application/json",
-              payload: JSON.stringify({
-                chat_id: incomingChatId,
-                text: `⚠️ <b>Chat ID không khớp</b>\n\nChat ID của bạn: <code>${incomingChatId}</code>\nChat ID đã cấu hình: <code>${expectedChatId}</code>\n\nVui lòng cập nhật <code>TELEGRAM_CHAT_ID</code> trong Script Properties thành <code>${incomingChatId}</code>.`,
-                parse_mode: "HTML"
-              }),
-              muteHttpExceptions: true
-            });
-          }
-        }
+    if (!message) {
+      return ContentService.createTextOutput("OK");
+    }
+
+    const incomingChatId = String(message.chat ? message.chat.id : "");
+    const messageId = message.message_id ? String(message.message_id) : "";
+    const text = message.text ? String(message.text).trim() : "";
+
+    // 2. Chống lặp tin nhắn triệt để (Deduplicate update_id & message_id & text)
+    const cache = (typeof CacheService !== 'undefined' && CacheService.getScriptCache)
+      ? CacheService.getScriptCache()
+      : null;
+
+    if (cache) {
+      const updateKey = updateId ? ("TG_UPD_" + updateId) : null;
+      const msgKey = (incomingChatId && messageId) ? ("TG_MSG_" + incomingChatId + "_" + messageId) : null;
+      const queryKey = (incomingChatId && text) ? ("TG_QRY_" + incomingChatId + "_" + encodeURIComponent(text.toLowerCase()) + "_" + Math.floor(Date.now() / 4000)) : null;
+
+      if ((updateKey && cache.get(updateKey)) || (msgKey && cache.get(msgKey)) || (queryKey && cache.get(queryKey))) {
+        Logger.log(`Duplicate request detected (update_id: ${updateId}, message_id: ${messageId}). Skipping to prevent duplicate replies.`);
         return ContentService.createTextOutput("OK");
       }
 
-      const text = update.message.text;
+      // Đánh dấu đã nhận ngay lập tức vào cache (TTL 10 phút)
+      if (updateKey) cache.put(updateKey, "1", 600);
+      if (msgKey) cache.put(msgKey, "1", 600);
+      if (queryKey) cache.put(queryKey, "1", 600);
+    }
 
-      if (text) {
-        if (text === "/start" || text === "/help") {
-          sendTelegramMessage("👋 <b>Xin chào!</b>\n\nHãy gửi câu hỏi tìm kiếm theo ngôn ngữ tự nhiên, ví dụ:\n- <i>giá dưới 500k ở Hà Nội 2k5</i>\n- <i>khu vực Sài Gòn vòng 1 trên 90</i>\n- <i>tìm bài active quanh Cầu Giấy</i>");
-          return ContentService.createTextOutput("OK");
+    // 3. Kiểm tra Chat ID hợp lệ
+    const expectedChatId = String(getTelegramChatId() || TELEGRAM_CHAT_ID);
+    if (expectedChatId && incomingChatId && incomingChatId !== expectedChatId) {
+      Logger.log(`⚠️ Chat ID mismatch. Incoming: ${incomingChatId}, Expected: ${expectedChatId}`);
+      const mismatchCacheKey = "MISMATCH_NOTIFY_" + incomingChatId;
+      if (cache && !cache.get(mismatchCacheKey)) {
+        cache.put(mismatchCacheKey, "1", 600);
+        const token = getTelegramApiKey() || TELEGRAM_BOT_TOKEN;
+        if (token) {
+          UrlFetchApp.fetch("https://api.telegram.org/bot" + token + "/sendMessage", {
+            method: "post",
+            contentType: "application/json",
+            payload: JSON.stringify({
+              chat_id: incomingChatId,
+              text: `⚠️ <b>Chat ID không khớp</b>\n\nChat ID của bạn: <code>${incomingChatId}</code>\nChat ID đã cấu hình: <code>${expectedChatId}</code>\n\nVui lòng cập nhật <code>TELEGRAM_CHAT_ID</code> trong Script Properties thành <code>${incomingChatId}</code>.`,
+              parse_mode: "HTML"
+            }),
+            muteHttpExceptions: true
+          });
         }
+      }
+      return ContentService.createTextOutput("OK");
+    }
 
-        const ruleJson = makeTheRule(text);
-        if (!ruleJson) {
-          sendTelegramMessage("❌ Không thể phân tích điều kiện từ câu hỏi này. Bạn hãy thử viết ngắn gọn hơn nhé (Ví dụ: <i>hà nội dưới 500k 2k5</i>).");
-          return ContentService.createTextOutput("OK");
-        }
-
-        let parsedRule;
-        try {
-          parsedRule = JSON.parse(ruleJson);
-        } catch (parseErr) {
-          Logger.log("Rule JSON parse error: " + parseErr + " | Rule text: " + ruleJson);
-          sendTelegramMessage("❌ Lỗi phân tích cú pháp điều kiện từ AI. Vui lòng thử lại.");
-          return ContentService.createTextOutput("OK");
-        }
-
-        const sheetName = getSheetName();
-        const result = DataQuery.fromSheet(sheetName).applyRule(parsedRule).execute();
-
-        if (!result || result.length === 0) {
-          sendTelegramMessage("❌ Không tìm thấy dữ liệu phù hợp với điều kiện của bạn.");
-          return ContentService.createTextOutput("OK");
-        }
-
-        sendResultData(result);
+    // 4. Xử lý lệnh hoặc câu hỏi
+    if (text) {
+      if (text === "/start" || text === "/help") {
+        sendTelegramMessage("👋 <b>Xin chào!</b>\n\nHãy gửi câu hỏi tìm kiếm theo ngôn ngữ tự nhiên, ví dụ:\n- <i>giá dưới 500k ở Hà Nội 2k5</i>\n- <i>khu vực Sài Gòn vòng 1 trên 90</i>\n- <i>tìm bài active quanh Cầu Giấy</i>");
         return ContentService.createTextOutput("OK");
       }
+
+      const ruleJson = makeTheRule(text);
+      if (!ruleJson) {
+        sendTelegramMessage("❌ Không thể phân tích điều kiện từ câu hỏi này. Bạn hãy thử viết ngắn gọn hơn nhé (Ví dụ: <i>hà nội dưới 500k 2k5</i>).");
+        return ContentService.createTextOutput("OK");
+      }
+
+      let parsedRule;
+      try {
+        parsedRule = JSON.parse(ruleJson);
+      } catch (parseErr) {
+        Logger.log("Rule JSON parse error: " + parseErr + " | Rule text: " + ruleJson);
+        sendTelegramMessage("❌ Lỗi phân tích cú pháp điều kiện từ AI. Vui lòng thử lại.");
+        return ContentService.createTextOutput("OK");
+      }
+
+      const sheetName = getSheetName();
+      const result = DataQuery.fromSheet(sheetName).applyRule(parsedRule).execute();
+
+      if (!result || result.length === 0) {
+        sendTelegramMessage("❌ Không tìm thấy dữ liệu phù hợp với điều kiện của bạn.");
+        return ContentService.createTextOutput("OK");
+      }
+
+      sendResultData(result);
+      return ContentService.createTextOutput("OK");
     }
 
     return ContentService.createTextOutput("OK");
@@ -140,6 +162,14 @@ function doPost(e) {
   } catch (error) {
     Logger.log('Error processing webhook: ' + error);
     return ContentService.createTextOutput("OK");
+  } finally {
+    if (lock) {
+      try {
+        lock.releaseLock();
+      } catch (e) {
+        // ignore lock release error
+      }
+    }
   }
 }
 
