@@ -338,34 +338,39 @@ export function upsertRecords<T>(
         if (!normUrl) continue;
 
         const itemHasPhone = hasValidPhone(itemObj.SoDienThoai);
-        const itemStatus = itemObj.TrangThai || (itemHasPhone ? 'active' : 'inactive');
+        const itemStatus = itemHasPhone ? 'active' : 'inactive';
 
         if (urlToRowIndex.has(normUrl)) {
             const rowIndex = urlToRowIndex.get(normUrl)!;
             const row = rows[rowIndex];
             updatedCount++;
 
-            // 1. Cập nhật số điện thoại nếu dữ liệu cũ chưa có mà lần crawl này có
-            const existingPhone = row[phoneIdx];
-            if (!hasValidPhone(existingPhone) && itemHasPhone) {
-                const formatter = (config as any).SoDienThoai?.formatter;
-                row[phoneIdx] = formatter ? formatter(itemObj.SoDienThoai) : String(itemObj.SoDienThoai ?? "");
-            }
-
-            // 2. Cập nhật trạng thái active / inactive theo kết quả ngày hôm nay
+            // 1. Cập nhật trạng thái active / inactive theo số điện thoại
             if (statusIdx !== -1) {
                 row[statusIdx] = itemStatus;
             }
 
-            // 3. Cập nhật các trường thông tin khác nếu trước đó chưa có hoặc có giá trị mới
+            // 2. Cập nhật tất cả các trường dữ liệu theo URL mới nhất
             for (const key of keys) {
-                if (key === 'URL' || key === 'SoDienThoai' || key === 'TrangThai') continue;
+                if (key === 'TrangThai') continue;
                 const hName = config[key]?.header || String(key);
                 const colIdx = headers.indexOf(hName);
-                if (colIdx !== -1 && itemObj[key]) {
-                    const formatter = config[key]?.formatter;
-                    const val = formatter ? formatter(itemObj[key]) : String(itemObj[key] ?? "");
-                    if (val && !row[colIdx]) {
+                if (colIdx === -1) continue;
+
+                if (key === 'URL') {
+                    if (itemObj.URL) {
+                        row[colIdx] = String(itemObj.URL).trim();
+                    }
+                } else if (key === 'SoDienThoai') {
+                    if (itemObj.SoDienThoai && String(itemObj.SoDienThoai).trim() !== "") {
+                        const formatter = (config as any).SoDienThoai?.formatter;
+                        row[colIdx] = formatter ? formatter(itemObj.SoDienThoai) : String(itemObj.SoDienThoai).trim();
+                    }
+                } else {
+                    const rawVal = itemObj[key];
+                    if (rawVal !== undefined && rawVal !== null && rawVal !== "" && !(Array.isArray(rawVal) && rawVal.length === 0)) {
+                        const formatter = config[key]?.formatter;
+                        const val = formatter ? formatter(rawVal) : String(rawVal);
                         row[colIdx] = val;
                     }
                 }
@@ -377,6 +382,7 @@ export function upsertRecords<T>(
                 if (!key) return '';
                 if (key === 'TrangThai') return itemStatus;
                 const rawVal = itemObj[key];
+                if (rawVal === undefined || rawVal === null) return '';
                 const formatter = config[key]?.formatter;
                 return formatter ? formatter(rawVal) : String(rawVal ?? "");
             });
@@ -389,6 +395,10 @@ export function upsertRecords<T>(
     let inactiveCount = 0;
     if (statusIdx !== -1) {
         rows.forEach(r => {
+            if (!r[statusIdx]) {
+                const phone = phoneIdx !== -1 ? r[phoneIdx] : '';
+                r[statusIdx] = hasValidPhone(phone) ? 'active' : 'inactive';
+            }
             if (r[statusIdx] === 'active') activeCount++;
             else inactiveCount++;
         });
@@ -485,8 +495,8 @@ export async function saveOrUpdateAllData<T>(
     return { headers, rows, stats };
 }
 
-// Function to update master sheet from daily sheet, adding only new records based on URL uniqueness
-export async function updateMasterFromDaily(dailySheetName: string, masterSheetName: string = 'AllData') {
+// Function to update master sheet from daily sheet, adding & updating records based on URL uniqueness
+export async function updateMasterFromDaily(dailySheetName: string, masterSheetName: string = 'AllData', config?: CsvConfig<any>) {
     const sheets = getSheetsClient();
     if (!sheets || !spreadsheetId) return;
 
@@ -501,46 +511,67 @@ export async function updateMasterFromDaily(dailySheetName: string, masterSheetN
             return;
         }
 
-        if (masterData.length === 0) {
-            await sheets.spreadsheets.values.update({
-                spreadsheetId,
-                range: `'${masterSheetName}'!A1`,
-                valueInputOption: 'RAW',
-                requestBody: { values: dailyData },
+        const dailyHeaders = dailyData[0];
+        const dailyRows = dailyData.slice(1);
+
+        const masterHeaders = masterData.length > 0 ? masterData[0] : dailyHeaders;
+        const masterRows = masterData.length > 0 ? masterData.slice(1) : [];
+
+        // Build mapping config if not provided
+        const effectiveConfig: CsvConfig<any> = config || {};
+        if (Object.keys(effectiveConfig).length === 0) {
+            dailyHeaders.forEach(h => {
+                let keyName = h;
+                const lower = h.toLowerCase();
+                if (lower === 'url') keyName = 'URL';
+                else if (lower === 'số điện thoại' || lower === 'sdt') keyName = 'SoDienThoai';
+                else if (lower === 'trạng thái') keyName = 'TrangThai';
+
+                (effectiveConfig as any)[keyName] = {
+                    header: h,
+                    formatter: keyName === 'SoDienThoai'
+                        ? (val: any) => (val && String(val).trim()) ? " '" + String(val).trim().replace(/^'\s*|\s*$/g, '') + " " : ""
+                        : undefined
+                };
             });
-            console.log(`✅ Copied all data from ${dailySheetName} to ${masterSheetName}`);
-            return;
         }
 
-        const headers = dailyData[0];
-        const urlIndex = headers.findIndex(h => h.toLowerCase() === 'url');
-        if (urlIndex === -1) {
-            console.error('URL column not found in daily sheet headers');
-            return;
-        }
-
-        const masterUrls = new Set(
-            masterData.slice(1).map(row => row[urlIndex]).filter(url => url && url.trim())
-        );
-
-        const newRecords = dailyData.slice(1).filter(row => {
-            const url = row[urlIndex];
-            return url && url.trim() && !masterUrls.has(url);
+        const headerToKey = new Map<number, string>();
+        dailyHeaders.forEach((h, idx) => {
+            const entry = Object.entries(effectiveConfig).find(([_, v]: [string, any]) => v?.header?.toLowerCase() === h.toLowerCase());
+            if (entry) {
+                headerToKey.set(idx, entry[0]);
+            } else {
+                headerToKey.set(idx, h);
+            }
         });
 
-        if (newRecords.length === 0) {
-            console.log(`No new records to add from ${dailySheetName} to ${masterSheetName}`);
-            return;
-        }
+        const dailyRecords = dailyRows.map(row => {
+            const obj: any = {};
+            row.forEach((val, idx) => {
+                const key = headerToKey.get(idx);
+                if (key) {
+                    obj[key] = val;
+                }
+            });
+            return obj;
+        });
 
-        await sheets.spreadsheets.values.append({
+        const { headers, rows, stats } = upsertRecords(masterHeaders, masterRows, dailyRecords, effectiveConfig);
+
+        const values = [headers, ...rows];
+        await sheets.spreadsheets.values.clear({
             spreadsheetId,
-            range: `'${masterSheetName}'!A:A`,
+            range: `'${masterSheetName}'`,
+        });
+        await sheets.spreadsheets.values.update({
+            spreadsheetId,
+            range: `'${masterSheetName}'!A1`,
             valueInputOption: 'RAW',
-            requestBody: { values: newRecords },
+            requestBody: { values },
         });
 
-        console.log(`✅ Added ${newRecords.length} new record(s) from ${dailySheetName} to ${masterSheetName}`);
+        console.log(`✅ Synced master sheet [${masterSheetName}] from daily [${dailySheetName}]: Total ${stats.total} (Added: ${stats.added}, Updated: ${stats.updated}, Active: ${stats.active}, Inactive: ${stats.inactive})`);
     } catch (error) {
         console.error('Error updating master from daily:', error);
     }

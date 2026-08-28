@@ -235,7 +235,13 @@ export const scrapeEscortPage = async function (link: string, browser: BrowserCo
           .filter(Boolean);
       }
 
-      result.TrangThai = result.SoDienThoai && result.SoDienThoai.trim() !== "" ? "active" : "inactive";
+      const hasPhone = (s?: string | null): boolean => {
+        if (!s) return false;
+        const cleaned = s.replace(/[^\d+]/g, "").trim();
+        return cleaned.length >= 7;
+      };
+
+      result.TrangThai = hasPhone(result.SoDienThoai) ? "active" : "inactive";
       return result;
     });
 

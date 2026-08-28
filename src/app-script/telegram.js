@@ -26,47 +26,116 @@ function formatDate(dateValue) {
 }
 
 /**
- * Tạo tin nhắn dạng bảng HTML cho 1 batch dữ liệu của 1 khu vực
+ * Chuẩn hóa số điện thoại, loại bỏ ký tự rác để người dùng chạm là copy chuẩn
  */
-function buildGroupMessageChunk(khuVuc, items, isFirstBatch = true) {
-    let message = "";
-    if (isFirstBatch) {
-        message += `🏙️ <b>Khu vực:</b> ${escapeHtml(khuVuc)}\n`;
-    }
-    message += "<pre>";
-    message += "Giá     | SĐT           | NS   | Ngày tạo\n";
-    message += "------------------------------------------\n";
-
-    for (const item of items) {
-        const gia = String(item["Giá"] || "-").padEnd(7);
-        const sdt = String(item["Số điện thoại"] || "-").padEnd(13);
-        const namSinh = String(item["Năm Sinh"] || "-").padEnd(4);
-        const ngayTao = formatDate(item["Ngày Tạo"]).padEnd(10);
-        message += `${gia} | ${sdt} | ${namSinh} | ${ngayTao}\n`;
-    }
-
-    message += "</pre>";
-    return message;
+function cleanPhoneNumber(phone) {
+    if (!phone) return "";
+    return String(phone).replace(/[^\d+]/g, "").trim();
 }
 
 /**
- * Gửi dữ liệu kết quả tới Telegram, chia batch nhỏ để tránh tin quá dài (>4096 chars)
+ * Định dạng 1 mục kết quả với <code>phone</code> giúp chạm 1 lần là sao chép được trên Telegram
+ */
+function formatResultItem(item) {
+    const rawPhone = item["Số điện thoại"] || "";
+    const phone = cleanPhoneNumber(rawPhone) || String(rawPhone).replace(/'/g, "").trim();
+    const gia = item["Giá"] ? String(item["Giá"]).trim() : "";
+    const namSinh = item["Năm Sinh"] ? `NS: ${item["Năm Sinh"]}` : "";
+
+    const specs = [];
+    if (gia) specs.push(gia);
+    if (namSinh) specs.push(namSinh);
+
+    if (item["Chiều Cao"] && item["Cân Nặng"]) {
+        specs.push(`${item["Chiều Cao"]}, ${item["Cân Nặng"]}`);
+    } else if (item["Chiều Cao"]) {
+        specs.push(`${item["Chiều Cao"]}`);
+    } else if (item["Cân Nặng"]) {
+        specs.push(`${item["Cân Nặng"]}`);
+    }
+
+    if (item["Số đồ 3 vòng"]) {
+        if (typeof item["Số đồ 3 vòng"] === "object") {
+            const v1 = item["Số đồ 3 vòng"].bust;
+            if (v1) specs.push(`V1: ${v1}`);
+        } else {
+            specs.push(String(item["Số đồ 3 vòng"]));
+        }
+    }
+
+    const detailStr = specs.length > 0 ? ` | ${specs.map(escapeHtml).join(" | ")}` : "";
+    return `• <code>${escapeHtml(phone)}</code>${detailStr}`;
+}
+
+/**
+ * Gom các kết quả thành các message súc tích (tối đa 3800 ký tự/message) để tránh spam tin nhắn Telegram
+ */
+function buildResultMessages(filteredItems, maxDisplay = 30) {
+    if (!filteredItems || filteredItems.length === 0) {
+        return ["❌ Không tìm thấy dữ liệu phù hợp."];
+    }
+
+    const totalCount = filteredItems.length;
+    const displayItems = filteredItems.slice(0, maxDisplay);
+    const groupedData = typeof groupByKey === 'function'
+        ? groupByKey(displayItems, "Khu Vực", "Khác")
+        : { "Danh sách": displayItems };
+
+    const messages = [];
+    let currentMessage = `📋 <b>Tìm thấy ${totalCount} kết quả${totalCount > maxDisplay ? ` (hiển thị ${maxDisplay} đầu)` : ""}:</b>\n\n`;
+
+    for (const [khuVuc, items] of Object.entries(groupedData)) {
+        let section = `🏙️ <b>${escapeHtml(khuVuc)}:</b>\n`;
+        for (const item of items) {
+            section += formatResultItem(item) + "\n";
+        }
+        section += "\n";
+
+        if ((currentMessage + section).length > 3800) {
+            messages.push(currentMessage.trim());
+            currentMessage = section;
+        } else {
+            currentMessage += section;
+        }
+    }
+
+    if (totalCount > maxDisplay) {
+        const footer = `<i>⚠️ Còn ${totalCount - maxDisplay} kết quả khác. Vui lòng thêm điều kiện để lọc chính xác hơn.</i>\n\n`;
+        if ((currentMessage + footer).length > 3800) {
+            messages.push(currentMessage.trim());
+            currentMessage = footer;
+        } else {
+            currentMessage += footer;
+        }
+    }
+
+    const copyTip = `<i>💡 Nhấn vào số điện thoại để sao chép nhanh.</i>`;
+    if ((currentMessage + copyTip).length > 3800) {
+        messages.push(currentMessage.trim());
+        currentMessage = copyTip;
+    } else {
+        currentMessage += copyTip;
+    }
+
+    if (currentMessage.trim()) {
+        messages.push(currentMessage.trim());
+    }
+
+    return messages;
+}
+
+/**
+ * Gửi dữ liệu kết quả tới Telegram dưới dạng tin nhắn gộp gọn gàng
  */
 function sendResultData(data) {
-    const filter = filterValidPhoneData(data);
+    const filter = typeof filterValidPhoneData === 'function' ? filterValidPhoneData(data) : data;
     if (!filter || filter.length === 0) {
         return sendTelegramMessage("❌ Không có dữ liệu phù hợp.");
     }
 
-    const groupedData = groupByKey(filter, "Khu Vực", "Không xác định");
-
-    for (const [khuVuc, items] of Object.entries(groupedData)) {
-        const BATCH_SIZE = 15;
-        for (let i = 0; i < items.length; i += BATCH_SIZE) {
-            const batch = items.slice(i, i + BATCH_SIZE);
-            const message = buildGroupMessageChunk(khuVuc, batch, i === 0);
-            sendTelegramMessage(message);
-        }
+    const messages = buildResultMessages(filter, 30);
+    for (const msg of messages) {
+        sendTelegramMessage(msg);
     }
 }
 
@@ -286,4 +355,22 @@ function setupTelegramWebhook(newUrl) {
 function removeTelegramWebhook() {
     removeWebhook();
     Logger.log("Telegram webhook removed.");
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        escapeHtml,
+        formatDate,
+        cleanPhoneNumber,
+        formatResultItem,
+        buildResultMessages,
+        sendResultData,
+        sendTelegramMessage,
+        checkTelegramConnection,
+        setWebhook,
+        updateDeployedUrlAndSetWebhook,
+        removeWebhook,
+        setupTelegramWebhook,
+        removeTelegramWebhook
+    };
 }

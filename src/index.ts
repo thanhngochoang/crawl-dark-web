@@ -54,10 +54,11 @@ async function main(urlArg?: string): Promise<void> {
         await sleep(listDelay);
 
         const links: string[] = await page.$$eval(
-            "div.escort-list a, div.product-grid a, .escort-list a, .product-grid a, a[href*='/gai-goi/']",
+            "div.escort-list a, div.product-grid a, .escort-list a, .product-grid a, .card a, a[href]",
             (as) => as.map((a) => (a as HTMLAnchorElement).href)
                       .filter(Boolean)
-                      .filter(href => /\/gai-goi\/\d+(\/|$)/.test(href))
+                      .filter(href => /\/\d+\/[a-z0-9_-]+/i.test(href) || /\/[a-z0-9_-]+\/\d+(\/|$)/i.test(href))
+                      .filter(href => !/\/(page|login|register|search|tag|category|danh-muc)(\/|\?|$)/i.test(href))
         );
 
         const uniqueLinks = [...new Set(links)];
