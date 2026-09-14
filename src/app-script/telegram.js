@@ -1,4 +1,20 @@
 /**
+ * Structured trace logger for end-to-end request lifecycle visibility
+ */
+function logTrace(traceId, stage, message, meta = null) {
+    const timestamp = new Date().toISOString();
+    const metaStr = meta ? (" | Data: " + (typeof meta === 'object' ? JSON.stringify(meta) : String(meta))) : "";
+    Logger.log(`[TRACE][${timestamp}][${traceId || "NO_TRACE_ID"}][${stage}] ${message}${metaStr}`);
+}
+
+/**
+ * Generate a unique trace ID for each incoming request
+ */
+function generateTraceId() {
+    return "req_" + Date.now().toString(36) + "_" + Math.random().toString(36).substring(2, 6);
+}
+
+/**
  * Escape HTML special characters to prevent Telegram HTML parser errors
  */
 function escapeHtml(text) {
@@ -10,7 +26,7 @@ function escapeHtml(text) {
 }
 
 /**
- * Định dạng ngày về dạng dd/MM/yyyy
+ * Format date value to dd/MM/yyyy format
  */
 function formatDate(dateValue) {
     if (!dateValue) return "-";
@@ -26,7 +42,7 @@ function formatDate(dateValue) {
 }
 
 /**
- * Chuẩn hóa số điện thoại, loại bỏ ký tự rác để người dùng chạm là copy chuẩn
+ * Clean phone number and strip invalid characters for tap-to-copy
  */
 function cleanPhoneNumber(phone) {
     if (!phone) return "";
@@ -34,7 +50,7 @@ function cleanPhoneNumber(phone) {
 }
 
 /**
- * Định dạng 1 mục kết quả với <code>phone</code> giúp chạm 1 lần là sao chép được trên Telegram
+ * Format a single result row item with <code>phone</code> tag for tap-to-copy on Telegram
  */
 function formatResultItem(item) {
     const rawPhone = item["Số điện thoại"] || "";
@@ -68,7 +84,7 @@ function formatResultItem(item) {
 }
 
 /**
- * Gom các kết quả thành các message súc tích (tối đa 3800 ký tự/message) để tránh spam tin nhắn Telegram
+ * Batch results into concise messages (max 3800 chars/message) to prevent spam & hitting Telegram limits
  */
 function buildResultMessages(filteredItems, maxDisplay = 30) {
     if (!filteredItems || filteredItems.length === 0) {
@@ -125,33 +141,38 @@ function buildResultMessages(filteredItems, maxDisplay = 30) {
 }
 
 /**
- * Gửi dữ liệu kết quả tới Telegram dưới dạng tin nhắn gộp gọn gàng
+ * Send filtered query results to Telegram as structured messages
  */
-function sendResultData(data) {
+function sendResultData(data, traceId = null) {
     const filter = typeof filterValidPhoneData === 'function' ? filterValidPhoneData(data) : data;
     if (!filter || filter.length === 0) {
-        return sendTelegramMessage("❌ Không có dữ liệu phù hợp.");
+        logTrace(traceId, "SEND_RESULT", "No valid data to send after phone filtering");
+        return sendTelegramMessage("❌ Không có dữ liệu phù hợp.", traceId);
     }
 
     const messages = buildResultMessages(filter, 30);
-    for (const msg of messages) {
-        sendTelegramMessage(msg);
+    logTrace(traceId, "SEND_RESULT", `Prepared ${messages.length} message chunk(s) for ${filter.length} item(s)`);
+
+    for (let i = 0; i < messages.length; i++) {
+        logTrace(traceId, "SEND_CHUNK", `Sending chunk ${i + 1}/${messages.length} (${messages[i].length} chars)`);
+        sendTelegramMessage(messages[i], traceId);
     }
 }
 
-
-// Function to send message to Telegram
-function sendTelegramMessage(message) {
+/**
+ * Send a message to Telegram via Bot API
+ */
+function sendTelegramMessage(message, traceId = null) {
     const token = getTelegramApiKey() || TELEGRAM_BOT_TOKEN;
     const chatId = getTelegramChatId() || TELEGRAM_CHAT_ID;
 
     if (!token) {
-        Logger.log("❌ Error sending message: TELEGRAM_BOT_TOKEN is not configured.");
+        logTrace(traceId, "SEND_MSG_ERROR", "TELEGRAM_BOT_TOKEN is not configured in Script Properties");
         return false;
     }
 
     if (!chatId) {
-        Logger.log("❌ Error sending message: TELEGRAM_CHAT_ID is not configured.");
+        logTrace(traceId, "SEND_MSG_ERROR", "TELEGRAM_CHAT_ID is not configured in Script Properties");
         return false;
     }
 
@@ -170,28 +191,251 @@ function sendTelegramMessage(message) {
         muteHttpExceptions: true,
     };
 
+    const startTime = Date.now();
     try {
+        logTrace(traceId, "SEND_MSG_START", `Dispatching sendMessage to Chat ID: ${chatId}`, { length: message.length });
         const response = UrlFetchApp.fetch(url, options);
+        const duration = Date.now() - startTime;
         const resText = response.getContentText();
-        Logger.log("Telegram message response: " + resText);
         const resJson = JSON.parse(resText);
-        return resJson && resJson.ok === true;
+        const isOk = resJson && resJson.ok === true;
+
+        logTrace(traceId, "SEND_MSG_COMPLETE", `Telegram API response in ${duration}ms (status: ${isOk ? "OK" : "FAILED"})`, {
+            statusCode: response.getResponseCode(),
+            ok: isOk,
+            description: resJson.description || null
+        });
+
+        return isOk;
     } catch (error) {
-        Logger.log("Error sending Telegram message: " + error);
+        const duration = Date.now() - startTime;
+        logTrace(traceId, "SEND_MSG_EXCEPTION", `Exception sending Telegram message in ${duration}ms: ${error.toString()}`);
         return false;
     }
 }
 
 /**
- * Function to test and verify Telegram Bot API connection
- * Checks:
- * 1. Bot token validity via /getMe
- * 2. Ability to send a test message to TELEGRAM_CHAT_ID via /sendMessage
- * 3. Current Webhook status via /getWebhookInfo
- * 
- * Returns an object with test results.
+ * Main handler for Telegram Webhook POST requests received from doPost(e)
+ */
+function handleTelegramWebhook(e) {
+    const traceId = generateTraceId();
+    const reqStart = Date.now();
+    let lock = null;
+
+    try {
+        logTrace(traceId, "REQ_RECEIVED", "Incoming webhook POST request initiated");
+
+        if (!e || !e.postData || !e.postData.contents) {
+            logTrace(traceId, "REQ_EMPTY", "Empty postData received, returning HTTP 200 OK");
+            return ContentService.createTextOutput("OK");
+        }
+
+        logTrace(traceId, "REQ_RAW_PAYLOAD", "Raw payload received", {
+            length: e.postData.contents.length,
+            type: e.postData.type,
+            rawPreview: e.postData.contents.substring(0, 300)
+        });
+
+        // 1. Synchronize webhook processing using LockService to prevent race conditions on retries
+        if (typeof LockService !== 'undefined' && LockService.getScriptLock) {
+            lock = LockService.getScriptLock();
+            const lockStart = Date.now();
+            try {
+                const acquired = lock.tryLock(15000);
+                logTrace(traceId, "LOCK_ACQUIRED", `Script lock acquired: ${acquired} (in ${Date.now() - lockStart}ms)`);
+            } catch (lockErr) {
+                logTrace(traceId, "LOCK_WARNING", `Lock acquisition warning: ${lockErr.toString()}`);
+            }
+        }
+
+        const update = JSON.parse(e.postData.contents);
+        const updateId = update.update_id;
+        const message = update.message || update.edited_message;
+
+        if (!message) {
+            logTrace(traceId, "UPDATE_NO_MSG", `Update received without standard message object (update_id: ${updateId})`, update);
+            return ContentService.createTextOutput("OK");
+        }
+
+        const incomingChatId = String(message.chat ? message.chat.id : "");
+        const messageId = message.message_id ? String(message.message_id) : "";
+        const sender = message.from ? `${message.from.first_name || ""} (@${message.from.username || "no_user"})` : "Unknown";
+        const text = message.text ? String(message.text).trim() : "";
+
+        logTrace(traceId, "PAYLOAD_PARSED", "Parsed Telegram Update message details", {
+            update_id: updateId,
+            message_id: messageId,
+            chat_id: incomingChatId,
+            chat_type: message.chat ? message.chat.type : "unknown",
+            sender: sender,
+            text: text
+        });
+
+        // 2. Message deduplication using CacheService
+        const cache = (typeof CacheService !== 'undefined' && CacheService.getScriptCache)
+            ? CacheService.getScriptCache()
+            : null;
+
+        if (cache) {
+            const updateKey = updateId ? ("TG_UPD_" + updateId) : null;
+            const msgKey = (incomingChatId && messageId) ? ("TG_MSG_" + incomingChatId + "_" + messageId) : null;
+            const queryKey = (incomingChatId && text) ? ("TG_QRY_" + incomingChatId + "_" + encodeURIComponent(text.toLowerCase()) + "_" + Math.floor(Date.now() / 4000)) : null;
+
+            if ((updateKey && cache.get(updateKey)) || (msgKey && cache.get(msgKey)) || (queryKey && cache.get(queryKey))) {
+                logTrace(traceId, "DEDUP_SKIPPED", `Duplicate request detected (update_id: ${updateId}, message_id: ${messageId}). Skipping duplicate reply.`);
+                return ContentService.createTextOutput("OK");
+            }
+
+            if (updateKey) cache.put(updateKey, "1", 600);
+            if (msgKey) cache.put(msgKey, "1", 600);
+            if (queryKey) cache.put(queryKey, "1", 600);
+            logTrace(traceId, "DEDUP_PASSED", "Deduplication check passed, keys registered in cache");
+        }
+
+        // 3. Verify incoming Chat ID matches expected configuration
+        const expectedChatId = String(getTelegramChatId() || TELEGRAM_CHAT_ID);
+        if (expectedChatId && incomingChatId && incomingChatId !== expectedChatId) {
+            logTrace(traceId, "AUTH_MISMATCH", `Chat ID mismatch! Incoming: ${incomingChatId}, Expected: ${expectedChatId}`);
+            const mismatchCacheKey = "MISMATCH_NOTIFY_" + incomingChatId;
+            if (cache && !cache.get(mismatchCacheKey)) {
+                cache.put(mismatchCacheKey, "1", 600);
+                const token = getTelegramApiKey() || TELEGRAM_BOT_TOKEN;
+                if (token) {
+                    UrlFetchApp.fetch("https://api.telegram.org/bot" + token + "/sendMessage", {
+                        method: "post",
+                        contentType: "application/json",
+                        payload: JSON.stringify({
+                            chat_id: incomingChatId,
+                            text: `⚠️ <b>Chat ID không khớp</b>\n\nChat ID của bạn: <code>${incomingChatId}</code>\nChat ID đã cấu hình: <code>${expectedChatId}</code>\n\nVui lòng cập nhật <code>TELEGRAM_CHAT_ID</code> trong Script Properties thành <code>${incomingChatId}</code>.`,
+                            parse_mode: "HTML"
+                        }),
+                        muteHttpExceptions: true
+                    });
+                }
+            }
+            return ContentService.createTextOutput("OK");
+        }
+        logTrace(traceId, "AUTH_PASSED", `Chat ID authorized: ${incomingChatId}`);
+
+        // 4. Process bot command or natural language query
+        if (text) {
+            if (text === "/start" || text === "/help") {
+                logTrace(traceId, "COMMAND_HELP", `Executing help command: ${text}`);
+                sendTelegramMessage("👋 <b>Xin chào!</b>\n\nHãy gửi câu hỏi tìm kiếm theo ngôn ngữ tự nhiên, ví dụ:\n- <i>giá dưới 500k ở Hà Nội 2k5</i>\n- <i>khu vực Sài Gòn vòng 1 trên 90</i>\n- <i>tìm bài active quanh Cầu Giấy</i>", traceId);
+                logTrace(traceId, "REQ_COMPLETE", `Request completed in ${Date.now() - reqStart}ms (Status: HELP_COMMAND_SERVED)`);
+                return ContentService.createTextOutput("OK");
+            }
+
+            logTrace(traceId, "QUERY_START", `Processing natural language query: "${text}"`);
+            const ruleJson = typeof makeTheRule === 'function' ? makeTheRule(text, false, traceId) : null;
+            if (!ruleJson) {
+                logTrace(traceId, "QUERY_FAILED_RULE", "Unable to generate rule from AI, sending fallback message");
+                sendTelegramMessage("❌ Không thể phân tích điều kiện từ câu hỏi này. Bạn hãy thử viết ngắn gọn hơn nhé (Ví dụ: <i>hà nội dưới 500k 2k5</i>).", traceId);
+                logTrace(traceId, "REQ_COMPLETE", `Request completed in ${Date.now() - reqStart}ms (Status: NO_AI_RULE)`);
+                return ContentService.createTextOutput("OK");
+            }
+
+            let parsedRule;
+            try {
+                parsedRule = JSON.parse(ruleJson);
+                logTrace(traceId, "RULE_PARSED", "Successfully parsed rule JSON", parsedRule);
+            } catch (parseErr) {
+                logTrace(traceId, "RULE_PARSE_ERROR", `JSON Parse Error on rule: ${parseErr.toString()}`, { rawRule: ruleJson });
+                sendTelegramMessage("❌ Lỗi phân tích cú pháp điều kiện từ AI. Vui lòng thử lại.", traceId);
+                logTrace(traceId, "REQ_COMPLETE", `Request completed in ${Date.now() - reqStart}ms (Status: PARSE_ERROR)`);
+                return ContentService.createTextOutput("OK");
+            }
+
+            const sheetName = typeof getSheetName === 'function' ? getSheetName() : "AllData";
+            logTrace(traceId, "SHEET_QUERY_START", `Querying sheet "${sheetName}" with rule`);
+
+            const queryStart = Date.now();
+            const result = typeof DataQuery !== 'undefined'
+                ? DataQuery.fromSheet(sheetName).applyRule(parsedRule).execute()
+                : [];
+            const queryDuration = Date.now() - queryStart;
+
+            logTrace(traceId, "SHEET_QUERY_DONE", `Sheet query finished in ${queryDuration}ms, found ${result ? result.length : 0} matching record(s)`);
+
+            if (!result || result.length === 0) {
+                logTrace(traceId, "NO_RESULTS", "0 matching records found for rule");
+                sendTelegramMessage("❌ Không tìm thấy dữ liệu phù hợp với điều kiện của bạn.", traceId);
+                logTrace(traceId, "REQ_COMPLETE", `Request completed in ${Date.now() - reqStart}ms (Status: ZERO_MATCH)`);
+                return ContentService.createTextOutput("OK");
+            }
+
+            sendResultData(result, traceId);
+            logTrace(traceId, "REQ_COMPLETE", `Request successfully completed in ${Date.now() - reqStart}ms (Status: RESULTS_DELIVERED)`);
+            return ContentService.createTextOutput("OK");
+        }
+
+        logTrace(traceId, "REQ_COMPLETE", `Request completed in ${Date.now() - reqStart}ms (Status: NO_TEXT)`);
+        return ContentService.createTextOutput("OK");
+
+    } catch (error) {
+        logTrace(traceId, "REQ_FATAL_ERROR", `Fatal error processing webhook in ${Date.now() - reqStart}ms: ${error.toString()}`, {
+            stack: error.stack || null
+        });
+        return ContentService.createTextOutput("OK");
+    } finally {
+        if (lock) {
+            try {
+                lock.releaseLock();
+                logTrace(traceId, "LOCK_RELEASED", "Script lock released successfully");
+            } catch (e) {}
+        }
+    }
+}
+
+/**
+ * Retrieve system diagnostics and Telegram Webhook status
+ */
+function getTelegramDiagnostics(traceId = null) {
+    logTrace(traceId, "DIAGNOSTICS_START", "Running diagnostics check");
+    const token = getTelegramApiKey();
+    const chatId = getTelegramChatId();
+    const spreadsheetId = getSpreadsheetId();
+    const geminiKey = getGeminiApiKey();
+    const cfAccountId = getCloudflareAccountId();
+    const cfApiToken = getCloudflareApiToken();
+    const cfModel = getCloudflareModel();
+    const deployedUrl = getDeployedUrl();
+
+    let webhookInfo = null;
+    if (token) {
+        try {
+            const res = UrlFetchApp.fetch("https://api.telegram.org/bot" + token + "/getWebhookInfo", { muteHttpExceptions: true });
+            const json = JSON.parse(res.getContentText());
+            webhookInfo = json.ok ? json.result : { error: json.description };
+        } catch (err) {
+            webhookInfo = { error: err.toString() };
+        }
+    }
+
+    const report = {
+        status: "online",
+        timestamp: new Date().toISOString(),
+        scriptProperties: {
+            TELEGRAM_BOT_TOKEN: token ? `Configured (Length: ${token.length})` : "MISSING ❌",
+            TELEGRAM_CHAT_ID: chatId ? chatId : "MISSING ❌",
+            CLOUDFLARE_WORKERS_AI: cfAccountId && cfApiToken ? `Configured ✅ (Model: ${cfModel})` : "Not configured (Optional)",
+            GEMINI_API_KEY: geminiKey ? "Configured ✅" : "Not configured (Optional)",
+            SPREADSHEET_ID: spreadsheetId ? spreadsheetId : "MISSING ❌",
+            DEPLOYED_URL: deployedUrl ? deployedUrl : "Not set in properties"
+        },
+        telegramWebhookStatus: webhookInfo
+    };
+
+    logTrace(traceId, "DIAGNOSTICS_COMPLETE", "Diagnostics completed", report);
+    return report;
+}
+
+/**
+ * Test and verify complete Telegram API connection
  */
 function checkTelegramConnection() {
+    const traceId = generateTraceId();
+    logTrace(traceId, "CONN_TEST_START", "Initiating Telegram connection verification");
     const token = getTelegramApiKey() || TELEGRAM_BOT_TOKEN;
     const chatId = getTelegramChatId() || TELEGRAM_CHAT_ID;
 
@@ -205,7 +449,7 @@ function checkTelegramConnection() {
 
     if (!token) {
         results.errors.push("TELEGRAM_BOT_TOKEN is not configured in Script Properties.");
-        Logger.log("❌ Connection Check Failed: TELEGRAM_BOT_TOKEN missing.");
+        logTrace(traceId, "CONN_TEST_FAIL", "TELEGRAM_BOT_TOKEN missing in script properties");
         return results;
     }
 
@@ -217,25 +461,25 @@ function checkTelegramConnection() {
         
         if (data.ok) {
             results.botInfo = data.result;
-            Logger.log("✅ Bot Verified: @" + data.result.username + " (" + data.result.first_name + ")");
+            logTrace(traceId, "CONN_TEST_BOT", `Bot Verified: @${data.result.username} (${data.result.first_name})`);
         } else {
             results.errors.push("Bot token error: " + (data.description || "Invalid token"));
-            Logger.log("❌ Bot Token Verification Failed: " + res.getContentText());
+            logTrace(traceId, "CONN_TEST_FAIL", "Bot Token verification failed: " + res.getContentText());
             return results;
         }
     } catch (err) {
         results.errors.push("Failed to connect to Telegram getMe API: " + err.toString());
-        Logger.log("❌ Network/API Error on getMe: " + err.toString());
+        logTrace(traceId, "CONN_TEST_ERROR", "Error on getMe: " + err.toString());
         return results;
     }
 
     // Step 2: Test sending a message to TELEGRAM_CHAT_ID
     if (!chatId) {
         results.errors.push("TELEGRAM_CHAT_ID is not configured in Script Properties.");
-        Logger.log("⚠️ TELEGRAM_CHAT_ID missing. Skipping test message.");
+        logTrace(traceId, "CONN_TEST_WARN", "TELEGRAM_CHAT_ID missing, skipping test message");
     } else {
         const testMsg = "🤖 <b>Kiểm tra kết nối Telegram Bot</b>\n\n✅ Bot kết nối thành công với Google Apps Script!\n⏰ Thời gian: " + new Date().toLocaleString("vi-VN");
-        const sent = sendTelegramMessage(testMsg);
+        const sent = sendTelegramMessage(testMsg, traceId);
         results.messageSent = sent;
         if (!sent) {
             results.errors.push("Không thể gửi tin nhắn thử tới Telegram Chat ID: " + chatId);
@@ -249,27 +493,112 @@ function checkTelegramConnection() {
         const data = JSON.parse(res.getContentText());
         if (data.ok) {
             results.webhookInfo = data.result;
+            logTrace(traceId, "CONN_TEST_WEBHOOK", "Webhook Info retrieved", data.result);
         }
     } catch (err) {
-        Logger.log("⚠️ Error fetching webhook info: " + err.toString());
+        logTrace(traceId, "CONN_TEST_WARN", "Error fetching webhook info: " + err.toString());
     }
 
     results.success = (results.botInfo !== null) && (chatId ? results.messageSent : true);
+    logTrace(traceId, "CONN_TEST_COMPLETE", `Connection test finished: ${results.success ? "SUCCESS" : "FAILED"}`);
     return results;
 }
 
-// Function to set webhook for Telegram
+/**
+ * UI Prompt: Test Telegram connection from Google Spreadsheet Menu
+ */
+function promptTestTelegramConnection() {
+    const ui = SpreadsheetApp.getUi();
+    const res = checkTelegramConnection();
+
+    if (res.success) {
+        const botName = res.botInfo ? `${res.botInfo.first_name} (@${res.botInfo.username})` : 'N/A';
+        const webhookUrl = res.webhookInfo && res.webhookInfo.url ? res.webhookInfo.url : 'Chưa cấu hình';
+        const pendingMsg = res.webhookInfo ? res.webhookInfo.pending_update_count : 0;
+
+        const msg = `✅ KẾT NỐI TELEGRAM THÀNH CÔNG!\n\n` +
+                    `🤖 Bot Name: ${botName}\n` +
+                    `📲 Gửi tin nhắn test: ${res.messageSent ? 'Thành công (Đã gửi tới Chat ID)' : 'Thất bại'}\n` +
+                    `🌐 Webhook URL: ${webhookUrl}\n` +
+                    `📩 Tin nhắn đang chờ: ${pendingMsg}`;
+        ui.alert('🎉 Kiểm Tra Kết Nối', msg, ui.ButtonSet.OK);
+    } else {
+        const errorMsg = res.errors.length > 0 ? res.errors.join('\n- ') : 'Không xác định được nguyên nhân.';
+        ui.alert('❌ Kết Nối Thất Bại', 'Chi tiết lỗi:\n- ' + errorMsg, ui.ButtonSet.OK);
+    }
+}
+
+/**
+ * UI Prompt: Update Telegram Webhook URL from Google Spreadsheet Menu
+ */
+function promptUpdateWebhook() {
+    const ui = SpreadsheetApp.getUi();
+    const currentUrl = getDeployedUrl();
+
+    const response = ui.prompt(
+        'Cập nhật Telegram Webhook',
+        'Nhập DEPLOYED_URL mới (hoặc để trống để tự động dùng Web App URL hiện tại):\nURL hiện tại: ' + (currentUrl || 'Chưa có'),
+        ui.ButtonSet.OK_CANCEL
+    );
+
+    if (response.getSelectedButton() === ui.Button.OK) {
+        const inputUrl = response.getResponseText().trim();
+        const success = updateDeployedUrlAndSetWebhook(inputUrl || null);
+        const activeUrl = inputUrl || getDeployedUrl();
+        if (success) {
+            ui.alert('✅ Thành công', 'Đã cập nhật Webhook Telegram thành công!\nURL: ' + activeUrl, ui.ButtonSet.OK);
+        } else {
+            ui.alert('❌ Thất bại', 'Không thể cập nhật Webhook. Vui lòng kiểm tra Logs hoặc Script Properties (TELEGRAM_BOT_TOKEN / DEPLOYED_URL).', ui.ButtonSet.OK);
+        }
+    }
+}
+
+/**
+ * UI Prompt: Check current Telegram Webhook status from Google Spreadsheet Menu
+ */
+function checkTelegramWebhookStatus() {
+    const ui = SpreadsheetApp.getUi();
+    const token = getTelegramApiKey();
+    if (!token) {
+        ui.alert('❌ Lỗi', 'Chưa cấu hình TELEGRAM_BOT_TOKEN trong Script Properties.', ui.ButtonSet.OK);
+        return;
+    }
+
+    try {
+        const response = UrlFetchApp.fetch("https://api.telegram.org/bot" + token + "/getWebhookInfo", { muteHttpExceptions: true });
+        const info = JSON.parse(response.getContentText());
+        if (info.ok) {
+            const result = info.result;
+            const msg = `URL Webhook: ${result.url || 'Chưa thiết lập'}\n` +
+                        `Có custom certificate: ${result.has_custom_certificate}\n` +
+                        `Số lượng tin nhắn chờ: ${result.pending_update_count}\n` +
+                        `Lỗi gần nhất: ${result.last_error_message || 'Không có'}`;
+            ui.alert('ℹ️ Trạng thái Webhook Telegram', msg, ui.ButtonSet.OK);
+        } else {
+            ui.alert('❌ Lỗi', 'Không thể lấy thông tin Webhook: ' + response.getContentText(), ui.ButtonSet.OK);
+        }
+    } catch (err) {
+        ui.alert('❌ Lỗi', 'Lỗi khi gọi Telegram API: ' + err.toString(), ui.ButtonSet.OK);
+    }
+}
+
+/**
+ * Register Webhook URL to Telegram Bot API
+ */
 function setWebhook(customUrl) {
+    const traceId = generateTraceId();
     const token = getTelegramApiKey() || TELEGRAM_BOT_TOKEN;
     const targetUrl = customUrl || getDeployedUrl() || DEPLOYED_URL;
 
+    logTrace(traceId, "SET_WEBHOOK_START", `Setting Telegram webhook to URL: ${targetUrl}`);
+
     if (!token) {
-        Logger.log("❌ Error setting webhook: TELEGRAM_BOT_TOKEN is not configured.");
+        logTrace(traceId, "SET_WEBHOOK_ERROR", "TELEGRAM_BOT_TOKEN is not configured");
         return false;
     }
 
     if (!targetUrl) {
-        Logger.log("❌ Error setting webhook: DEPLOYED_URL is empty.");
+        logTrace(traceId, "SET_WEBHOOK_ERROR", "DEPLOYED_URL is empty");
         return false;
     }
 
@@ -288,17 +617,16 @@ function setWebhook(customUrl) {
     try {
         const response = UrlFetchApp.fetch(url, options);
         const resultText = response.getContentText();
-        Logger.log("Webhook set for URL (" + targetUrl + "): " + resultText);
+        logTrace(traceId, "SET_WEBHOOK_RESPONSE", `Webhook registration response for ${targetUrl}: ${resultText}`);
         return true;
     } catch (error) {
-        Logger.log("Error setting webhook: " + error);
+        logTrace(traceId, "SET_WEBHOOK_EXCEPTION", `Error setting webhook: ${error.toString()}`);
         return false;
     }
 }
 
 /**
- * Cập nhật DEPLOYED_URL trong Script Properties và tự động gọi setWebhook.
- * Nếu không truyền newUrl, hàm sẽ tự động lấy Web App URL qua ScriptApp.getService().getUrl() (nếu có).
+ * Update DEPLOYED_URL in Script Properties and automatically invoke setWebhook
  */
 function updateDeployedUrlAndSetWebhook(newUrl) {
     let targetUrl = newUrl;
@@ -307,29 +635,34 @@ function updateDeployedUrlAndSetWebhook(newUrl) {
         try {
             targetUrl = ScriptApp.getService().getUrl();
         } catch (e) {
-            Logger.log("Không thể tự động lấy Web App URL: " + e);
+            Logger.log("Unable to automatically get Web App URL: " + e);
         }
     }
 
     if (targetUrl) {
         setDeployedUrl(targetUrl);
-        Logger.log("Đã cập nhật DEPLOYED_URL trong Script Properties: " + targetUrl);
+        Logger.log("Updated DEPLOYED_URL in Script Properties: " + targetUrl);
     } else {
         targetUrl = getDeployedUrl();
     }
 
     if (!targetUrl) {
-        Logger.log("❌ Không tìm thấy DEPLOYED_URL. Vui lòng truyền URL hoặc thiết lập DEPLOYED_URL trong Script Properties.");
+        Logger.log("❌ DEPLOYED_URL not found. Please provide URL or set DEPLOYED_URL in Script Properties.");
         return false;
     }
 
     return setWebhook(targetUrl);
 }
 
-// Function to remove webhook
+/**
+ * Delete Telegram Webhook
+ */
 function removeWebhook() {
+    const traceId = generateTraceId();
     const token = getTelegramApiKey() || TELEGRAM_BOT_TOKEN;
     const url = "https://api.telegram.org/bot" + token + "/deleteWebhook";
+
+    logTrace(traceId, "REMOVE_WEBHOOK_START", "Calling Telegram deleteWebhook API");
 
     const options = {
         method: "post",
@@ -338,20 +671,18 @@ function removeWebhook() {
 
     try {
         const response = UrlFetchApp.fetch(url, options);
-        Logger.log("Webhook removed: " + response.getContentText());
+        logTrace(traceId, "REMOVE_WEBHOOK_COMPLETE", `Webhook delete response: ${response.getContentText()}`);
     } catch (error) {
-        Logger.log("Error removing webhook: " + error);
+        logTrace(traceId, "REMOVE_WEBHOOK_EXCEPTION", `Error removing webhook: ${error.toString()}`);
     }
 }
 
-// Function to setup Telegram webhook
 function setupTelegramWebhook(newUrl) {
     const result = updateDeployedUrlAndSetWebhook(newUrl);
     Logger.log("Telegram webhook setup completed.");
     return result;
 }
 
-// Function to remove Telegram webhook
 function removeTelegramWebhook() {
     removeWebhook();
     Logger.log("Telegram webhook removed.");
@@ -359,6 +690,8 @@ function removeTelegramWebhook() {
 
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
+        logTrace,
+        generateTraceId,
         escapeHtml,
         formatDate,
         cleanPhoneNumber,
@@ -366,7 +699,12 @@ if (typeof module !== 'undefined' && module.exports) {
         buildResultMessages,
         sendResultData,
         sendTelegramMessage,
+        handleTelegramWebhook,
+        getTelegramDiagnostics,
         checkTelegramConnection,
+        promptTestTelegramConnection,
+        promptUpdateWebhook,
+        checkTelegramWebhookStatus,
         setWebhook,
         updateDeployedUrlAndSetWebhook,
         removeWebhook,

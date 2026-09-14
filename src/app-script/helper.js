@@ -1,6 +1,6 @@
-// Function to query sheet data using Gemini AI
-
-// Function to query sheet data using Gemini AI
+/**
+ * Prompt builder and AI Query Engine integrations (Cloudflare Workers AI & Gemini)
+ */
 
 function buildPrompt(query) {
     return `
@@ -143,33 +143,56 @@ Phản hồi của bạn phải là một đối tượng JSON HỢP LỆ và KH
 `;
 }
 
-function makeTheRule(query, returnPromptOnly = false) {
+function makeTheRule(query, returnPromptOnly = false, traceId = null) {
     const prompt = buildPrompt(query);
     if (returnPromptOnly) return prompt;
 
-    // 1. Ưu tiên sử dụng Cloudflare Workers AI (Miễn phí 10,000 req/ngày & Không bị Safety Block)
+    if (typeof logTrace === 'function') {
+        logTrace(traceId, "AI_RULE_START", "Starting AI query to JSON rule translation", { query });
+    }
+
+    // 1. Prioritize Cloudflare Workers AI (Free tier & No Safety Block)
     if (getCloudflareAccountId() && getCloudflareApiToken()) {
-        const cfResult = callCloudflareAI(query);
-        if (cfResult) return cfResult;
+        const cfResult = callCloudflareAI(query, traceId);
+        if (cfResult) {
+            if (typeof logTrace === 'function') {
+                logTrace(traceId, "AI_RULE_SUCCESS", "Successfully generated rule using Cloudflare Workers AI", { rule: cfResult });
+            }
+            return cfResult;
+        }
     }
 
-    // 2. Fallback sang Google Gemini nếu có GEMINI_API_KEY
+    // 2. Fallback to Google Gemini if GEMINI_API_KEY is configured
     if (getGeminiApiKey()) {
-        const geminiResult = callGemini(prompt);
-        if (geminiResult) return geminiResult;
+        if (typeof logTrace === 'function') {
+            logTrace(traceId, "AI_RULE_FALLBACK", "Falling back to Google Gemini API");
+        }
+        const geminiResult = callGemini(prompt, traceId);
+        if (geminiResult) {
+            if (typeof logTrace === 'function') {
+                logTrace(traceId, "AI_RULE_SUCCESS", "Successfully generated rule using Google Gemini", { rule: geminiResult });
+            }
+            return geminiResult;
+        }
     }
 
-    Logger.log("❌ Không thể tạo rule từ AI (Cloudflare hoặc Gemini không trả về kết quả hợp lệ).");
+    if (typeof logTrace === 'function') {
+        logTrace(traceId, "AI_RULE_FAILED", "Failed to generate rule from AI providers (Cloudflare / Gemini)");
+    } else {
+        Logger.log("❌ Failed to generate rule from AI (Neither Cloudflare nor Gemini returned valid response).");
+    }
     return null;
 }
 
-function callCloudflareAI(query) {
+function callCloudflareAI(query, traceId = null) {
     const accountId = getCloudflareAccountId() || CLOUDFLARE_ACCOUNT_ID;
     const apiToken = getCloudflareApiToken() || CLOUDFLARE_API_TOKEN;
     const model = getCloudflareModel() || CLOUDFLARE_MODEL || "@cf/qwen/qwen2.5-7b-instruct";
 
     if (!accountId || !apiToken) {
-        Logger.log("⚠️ Cloudflare credentials missing.");
+        if (typeof logTrace === 'function') {
+            logTrace(traceId, "CF_AI_SKIP", "Cloudflare credentials not configured");
+        }
         return null;
     }
 
@@ -201,9 +224,14 @@ function callCloudflareAI(query) {
         muteHttpExceptions: true
     };
 
+    const cfStart = Date.now();
     try {
+        if (typeof logTrace === 'function') {
+            logTrace(traceId, "CF_AI_REQUEST", "Sending request to Cloudflare Workers AI", { model, url });
+        }
         const response = UrlFetchApp.fetch(url, options);
         const resText = response.getContentText();
+        const duration = Date.now() - cfStart;
         const result = JSON.parse(resText);
 
         if (result.success && result.result) {
@@ -212,19 +240,27 @@ function callCloudflareAI(query) {
                 .replace(/```json\s*/gi, "")
                 .replace(/```\s*/gi, "")
                 .trim();
+            if (typeof logTrace === 'function') {
+                logTrace(traceId, "CF_AI_RESPONSE", `Received response from Cloudflare in ${duration}ms`, { rawLength: aiResponse.length });
+            }
             return aiResponse;
         } else {
             const errMsg = (result.errors && result.errors.length > 0) ? result.errors[0].message : "Unknown Cloudflare AI error";
-            Logger.log("Cloudflare AI Error: " + errMsg);
+            if (typeof logTrace === 'function') {
+                logTrace(traceId, "CF_AI_ERROR", `Cloudflare AI returned error in ${duration}ms: ${errMsg}`, result.errors);
+            }
             return null;
         }
     } catch (error) {
-        Logger.log("Error querying Cloudflare AI: " + error.toString());
+        const duration = Date.now() - cfStart;
+        if (typeof logTrace === 'function') {
+            logTrace(traceId, "CF_AI_EXCEPTION", `Exception calling Cloudflare AI in ${duration}ms: ${error.toString()}`);
+        }
         return null;
     }
 }
 
-function callGemini(prompt) {
+function callGemini(prompt, traceId = null) {
     const apiKey = getGeminiApiKey();
     if (!apiKey) return null;
 
@@ -245,12 +281,19 @@ function callGemini(prompt) {
         muteHttpExceptions: true,
     };
 
+    const geminiStart = Date.now();
     try {
+        if (typeof logTrace === 'function') {
+            logTrace(traceId, "GEMINI_REQUEST", "Sending request to Google Gemini API", { model: modelName });
+        }
         const response = UrlFetchApp.fetch(url, options);
+        const duration = Date.now() - geminiStart;
         const result = JSON.parse(response.getContentText());
 
         if (result.error) {
-            Logger.log(`Gemini API Error: ${result.error.message}`);
+            if (typeof logTrace === 'function') {
+                logTrace(traceId, "GEMINI_ERROR", `Gemini API returned error in ${duration}ms: ${result.error.message}`, result.error);
+            }
             return null;
         }
 
@@ -258,7 +301,9 @@ function callGemini(prompt) {
             const candidate = result.candidates[0];
 
             if (candidate.finishReason === 'SAFETY') {
-                Logger.log("Gemini prompt blocked due to safety settings.");
+                if (typeof logTrace === 'function') {
+                    logTrace(traceId, "GEMINI_SAFETY_BLOCK", `Gemini prompt blocked due to safety settings in ${duration}ms`);
+                }
                 return null;
             }
 
@@ -268,12 +313,18 @@ function callGemini(prompt) {
                 .replace(/```\s*/gi, "")
                 .trim();
 
+            if (typeof logTrace === 'function') {
+                logTrace(traceId, "GEMINI_RESPONSE", `Received response from Gemini in ${duration}ms`, { rawLength: aiResponse.length });
+            }
             return aiResponse;
         }
         return null;
 
     } catch (error) {
-        Logger.log("Error querying Gemini: " + error.toString());
+        const duration = Date.now() - geminiStart;
+        if (typeof logTrace === 'function') {
+            logTrace(traceId, "GEMINI_EXCEPTION", `Exception calling Gemini API in ${duration}ms: ${error.toString()}`);
+        }
         return null;
     }
 }
@@ -286,5 +337,3 @@ if (typeof module !== 'undefined' && module.exports) {
         callGemini
     };
 }
-
-

@@ -1,3 +1,7 @@
+/**
+ * Data filtering, querying, sorting, and normalization utilities for Google Apps Script
+ */
+
 function removeUnicode(str) {
     if (str == null) return '';
     return String(str)
@@ -147,10 +151,10 @@ function matchFilter(item, filter) {
 function applyFilters(item, rule) {
     if (!rule) return true;
 
-    // Nếu rule là filter đơn
+    // Single filter condition
     if (rule.field) return matchFilter(item, rule);
 
-    // Nếu là nhóm logic
+    // Logical group condition
     if (Array.isArray(rule.filters)) {
         if (rule.filters.length === 0) return true;
         const results = rule.filters.map(f => applyFilters(item, f));
@@ -164,10 +168,10 @@ function applyFilters(item, rule) {
 
 // ========== partitionArray ==========
 /**
- * Chia mảng thành 2 nhóm: nhóm thỏa điều kiện (true) và nhóm không thỏa (false)
- * @param {Array} arr - Mảng đầu vào
- * @param {(val: any, i: number, arr: Array) => boolean} fn - Hàm kiểm tra
- * @returns {[Array, Array]} - Hai mảng kết quả
+ * Partitions an array into two arrays: matching (true) and non-matching (false)
+ * @param {Array} arr - Input array
+ * @param {(val: any, i: number, arr: Array) => boolean} fn - Predicate function
+ * @returns {[Array, Array]} - Two partitioned arrays
  */
 function partitionArray(arr, fn) {
     return arr.reduce(
@@ -411,7 +415,7 @@ function convertEnumToArrayOptionsSelect(enumData) {
         }));
 }
 
-// Giả lập hàm camelCaseToWords nếu cần dùng độc lập
+// Helper function to convert camelCase string to spaced words
 function camelCaseToWords(str) {
     return str.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase());
 }
@@ -499,10 +503,3 @@ if (typeof module !== 'undefined' && module.exports) {
         distinctByFields
     };
 }
-
-
-
-
-
-
-
