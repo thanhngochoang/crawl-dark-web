@@ -214,13 +214,95 @@ function sendTelegramMessage(message, traceId = null) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Webhook queue architecture
+//
+// Telegram re-delivers an update (same update_id) whenever the webhook does not
+// answer 2xx quickly. The previous design ran AI + sheet query + sendMessage
+// inside the webhook request, which regularly exceeded that window and caused
+// the same result to be sent many times. The webhook now only deduplicates,
+// persists a job and schedules a time-based trigger, then ACKs immediately.
+// The heavy work runs in processTelegramQueue() outside the HTTP request.
+// ---------------------------------------------------------------------------
+
+const TG_JOB_PREFIX = "TG_JOB_";
+const TG_QUEUE_SCHEDULED_KEY = "TG_QUEUE_SCHEDULED";
+const TG_QUEUE_PROCESSOR_FN = "processTelegramQueue";
+const TG_DEDUP_TTL_SECONDS = 600;
+const TG_PROCESSOR_TIME_BUDGET_MS = 4.5 * 60 * 1000;
+
 /**
- * Main handler for Telegram Webhook POST requests received from doPost(e)
+ * Persist a webhook job so the trigger-based processor can pick it up
+ */
+function enqueueTelegramJob(job) {
+    PropertiesService.getScriptProperties().setProperty(TG_JOB_PREFIX + job.updateId, JSON.stringify(job));
+}
+
+/**
+ * Return all pending jobs ordered by update_id (Telegram delivery order)
+ */
+function listTelegramJobs() {
+    const props = PropertiesService.getScriptProperties().getProperties();
+    const jobs = [];
+    for (const key of Object.keys(props)) {
+        if (!key.startsWith(TG_JOB_PREFIX)) continue;
+        try {
+            jobs.push(JSON.parse(props[key]));
+        } catch (e) {
+            // Corrupted entry: drop it so it does not block the queue forever
+            PropertiesService.getScriptProperties().deleteProperty(key);
+        }
+    }
+    return jobs.sort((a, b) => Number(a.updateId) - Number(b.updateId));
+}
+
+function deleteTelegramJob(updateId) {
+    PropertiesService.getScriptProperties().deleteProperty(TG_JOB_PREFIX + updateId);
+}
+
+/**
+ * Schedule the queue processor trigger unless one is already pending.
+ * The pending flag is cleared by the processor when it starts, so any update
+ * arriving while it runs schedules a fresh trigger.
+ */
+function scheduleTelegramQueueProcessor(traceId, cache) {
+    if (cache && cache.get(TG_QUEUE_SCHEDULED_KEY)) {
+        logTrace(traceId, "QUEUE_SCHEDULE_SKIP", "Processor trigger already pending, reusing it");
+        return false;
+    }
+    if (typeof ScriptApp === 'undefined' || !ScriptApp.newTrigger) {
+        logTrace(traceId, "QUEUE_SCHEDULE_ERROR", "ScriptApp triggers unavailable in this runtime");
+        return false;
+    }
+    ScriptApp.newTrigger(TG_QUEUE_PROCESSOR_FN).timeBased().after(1000).create();
+    if (cache) cache.put(TG_QUEUE_SCHEDULED_KEY, "1", 120);
+    logTrace(traceId, "QUEUE_SCHEDULED", "Processor trigger created (fires in ~1s)");
+    return true;
+}
+
+/**
+ * Remove every time-based trigger pointing at the queue processor
+ */
+function deleteTelegramQueueTriggers() {
+    if (typeof ScriptApp === 'undefined' || !ScriptApp.getProjectTriggers) return 0;
+    let removed = 0;
+    for (const trigger of ScriptApp.getProjectTriggers()) {
+        const handler = typeof trigger.getHandlerFunction === 'function' ? trigger.getHandlerFunction() : trigger.fn;
+        if (handler === TG_QUEUE_PROCESSOR_FN) {
+            ScriptApp.deleteTrigger(trigger);
+            removed++;
+        }
+    }
+    return removed;
+}
+
+/**
+ * Main handler for Telegram Webhook POST requests received from doPost(e).
+ * Fast path only: parse, dedup, authorize, enqueue, ACK.
  */
 function handleTelegramWebhook(e) {
     const traceId = generateTraceId();
     const reqStart = Date.now();
-    let lock = null;
 
     try {
         logTrace(traceId, "REQ_RECEIVED", "Incoming webhook POST request initiated");
@@ -236,24 +318,13 @@ function handleTelegramWebhook(e) {
             rawPreview: e.postData.contents.substring(0, 300)
         });
 
-        // 1. Synchronize webhook processing using LockService to prevent race conditions on retries
-        if (typeof LockService !== 'undefined' && LockService.getScriptLock) {
-            lock = LockService.getScriptLock();
-            const lockStart = Date.now();
-            try {
-                const acquired = lock.tryLock(15000);
-                logTrace(traceId, "LOCK_ACQUIRED", `Script lock acquired: ${acquired} (in ${Date.now() - lockStart}ms)`);
-            } catch (lockErr) {
-                logTrace(traceId, "LOCK_WARNING", `Lock acquisition warning: ${lockErr.toString()}`);
-            }
-        }
-
         const update = JSON.parse(e.postData.contents);
         const updateId = update.update_id;
-        const message = update.message || update.edited_message;
+        // Ignore edited_message: re-running a query because the user fixed a typo is a duplicate reply
+        const message = update.message;
 
         if (!message) {
-            logTrace(traceId, "UPDATE_NO_MSG", `Update received without standard message object (update_id: ${updateId})`, update);
+            logTrace(traceId, "UPDATE_NO_MSG", `Update received without a new message object (update_id: ${updateId})`, update);
             return ContentService.createTextOutput("OK");
         }
 
@@ -271,34 +342,32 @@ function handleTelegramWebhook(e) {
             text: text
         });
 
-        // 2. Message deduplication using CacheService
+        // 1. Deduplicate by update_id (Telegram retries) and message_id (defensive)
         const cache = (typeof CacheService !== 'undefined' && CacheService.getScriptCache)
             ? CacheService.getScriptCache()
             : null;
+        const updateKey = updateId !== undefined && updateId !== null ? ("TG_UPD_" + updateId) : null;
+        const msgKey = (incomingChatId && messageId) ? ("TG_MSG_" + incomingChatId + "_" + messageId) : null;
 
         if (cache) {
-            const updateKey = updateId ? ("TG_UPD_" + updateId) : null;
-            const msgKey = (incomingChatId && messageId) ? ("TG_MSG_" + incomingChatId + "_" + messageId) : null;
-            const queryKey = (incomingChatId && text) ? ("TG_QRY_" + incomingChatId + "_" + encodeURIComponent(text.toLowerCase()) + "_" + Math.floor(Date.now() / 4000)) : null;
-
-            if ((updateKey && cache.get(updateKey)) || (msgKey && cache.get(msgKey)) || (queryKey && cache.get(queryKey))) {
-                logTrace(traceId, "DEDUP_SKIPPED", `Duplicate request detected (update_id: ${updateId}, message_id: ${messageId}). Skipping duplicate reply.`);
+            const cacheHit = (updateKey && cache.get(updateKey)) || (msgKey && cache.get(msgKey));
+            const jobPending = updateKey && PropertiesService.getScriptProperties().getProperty(TG_JOB_PREFIX + updateId);
+            if (cacheHit || jobPending) {
+                logTrace(traceId, "DEDUP_SKIPPED", `Duplicate request detected (update_id: ${updateId}, message_id: ${messageId}). Skipping.`);
                 return ContentService.createTextOutput("OK");
             }
-
-            if (updateKey) cache.put(updateKey, "1", 600);
-            if (msgKey) cache.put(msgKey, "1", 600);
-            if (queryKey) cache.put(queryKey, "1", 600);
+            if (updateKey) cache.put(updateKey, "1", TG_DEDUP_TTL_SECONDS);
+            if (msgKey) cache.put(msgKey, "1", TG_DEDUP_TTL_SECONDS);
             logTrace(traceId, "DEDUP_PASSED", "Deduplication check passed, keys registered in cache");
         }
 
-        // 3. Verify incoming Chat ID matches expected configuration
-        const expectedChatId = String(getTelegramChatId() || TELEGRAM_CHAT_ID);
+        // 2. Verify incoming Chat ID matches expected configuration
+        const expectedChatId = String(getTelegramChatId() || TELEGRAM_CHAT_ID || "");
         if (expectedChatId && incomingChatId && incomingChatId !== expectedChatId) {
             logTrace(traceId, "AUTH_MISMATCH", `Chat ID mismatch! Incoming: ${incomingChatId}, Expected: ${expectedChatId}`);
             const mismatchCacheKey = "MISMATCH_NOTIFY_" + incomingChatId;
             if (cache && !cache.get(mismatchCacheKey)) {
-                cache.put(mismatchCacheKey, "1", 600);
+                cache.put(mismatchCacheKey, "1", TG_DEDUP_TTL_SECONDS);
                 const token = getTelegramApiKey() || TELEGRAM_BOT_TOKEN;
                 if (token) {
                     UrlFetchApp.fetch("https://api.telegram.org/bot" + token + "/sendMessage", {
@@ -317,59 +386,25 @@ function handleTelegramWebhook(e) {
         }
         logTrace(traceId, "AUTH_PASSED", `Chat ID authorized: ${incomingChatId}`);
 
-        // 4. Process bot command or natural language query
-        if (text) {
-            if (text === "/start" || text === "/help") {
-                logTrace(traceId, "COMMAND_HELP", `Executing help command: ${text}`);
-                sendTelegramMessage("👋 <b>Xin chào!</b>\n\nHãy gửi câu hỏi tìm kiếm theo ngôn ngữ tự nhiên, ví dụ:\n- <i>giá dưới 500k ở Hà Nội 2k5</i>\n- <i>khu vực Sài Gòn vòng 1 trên 90</i>\n- <i>tìm bài active quanh Cầu Giấy</i>", traceId);
-                logTrace(traceId, "REQ_COMPLETE", `Request completed in ${Date.now() - reqStart}ms (Status: HELP_COMMAND_SERVED)`);
-                return ContentService.createTextOutput("OK");
-            }
-
-            logTrace(traceId, "QUERY_START", `Processing natural language query: "${text}"`);
-            const ruleJson = typeof makeTheRule === 'function' ? makeTheRule(text, false, traceId) : null;
-            if (!ruleJson) {
-                logTrace(traceId, "QUERY_FAILED_RULE", "Unable to generate rule from AI, sending fallback message");
-                sendTelegramMessage("❌ Không thể phân tích điều kiện từ câu hỏi này. Bạn hãy thử viết ngắn gọn hơn nhé (Ví dụ: <i>hà nội dưới 500k 2k5</i>).", traceId);
-                logTrace(traceId, "REQ_COMPLETE", `Request completed in ${Date.now() - reqStart}ms (Status: NO_AI_RULE)`);
-                return ContentService.createTextOutput("OK");
-            }
-
-            let parsedRule;
-            try {
-                parsedRule = JSON.parse(ruleJson);
-                logTrace(traceId, "RULE_PARSED", "Successfully parsed rule JSON", parsedRule);
-            } catch (parseErr) {
-                logTrace(traceId, "RULE_PARSE_ERROR", `JSON Parse Error on rule: ${parseErr.toString()}`, { rawRule: ruleJson });
-                sendTelegramMessage("❌ Lỗi phân tích cú pháp điều kiện từ AI. Vui lòng thử lại.", traceId);
-                logTrace(traceId, "REQ_COMPLETE", `Request completed in ${Date.now() - reqStart}ms (Status: PARSE_ERROR)`);
-                return ContentService.createTextOutput("OK");
-            }
-
-            const sheetName = typeof getSheetName === 'function' ? getSheetName() : "AllData";
-            logTrace(traceId, "SHEET_QUERY_START", `Querying sheet "${sheetName}" with rule`);
-
-            const queryStart = Date.now();
-            const result = typeof DataQuery !== 'undefined'
-                ? DataQuery.fromSheet(sheetName).applyRule(parsedRule).execute()
-                : [];
-            const queryDuration = Date.now() - queryStart;
-
-            logTrace(traceId, "SHEET_QUERY_DONE", `Sheet query finished in ${queryDuration}ms, found ${result ? result.length : 0} matching record(s)`);
-
-            if (!result || result.length === 0) {
-                logTrace(traceId, "NO_RESULTS", "0 matching records found for rule");
-                sendTelegramMessage("❌ Không tìm thấy dữ liệu phù hợp với điều kiện của bạn.", traceId);
-                logTrace(traceId, "REQ_COMPLETE", `Request completed in ${Date.now() - reqStart}ms (Status: ZERO_MATCH)`);
-                return ContentService.createTextOutput("OK");
-            }
-
-            sendResultData(result, traceId);
-            logTrace(traceId, "REQ_COMPLETE", `Request successfully completed in ${Date.now() - reqStart}ms (Status: RESULTS_DELIVERED)`);
+        if (!text) {
+            logTrace(traceId, "REQ_COMPLETE", `Request completed in ${Date.now() - reqStart}ms (Status: NO_TEXT)`);
             return ContentService.createTextOutput("OK");
         }
 
-        logTrace(traceId, "REQ_COMPLETE", `Request completed in ${Date.now() - reqStart}ms (Status: NO_TEXT)`);
+        // 3. Persist the job and hand off to the trigger-based processor
+        enqueueTelegramJob({
+            updateId: updateId,
+            messageId: messageId,
+            chatId: incomingChatId,
+            sender: sender,
+            text: text,
+            traceId: traceId,
+            enqueuedAt: Date.now()
+        });
+        logTrace(traceId, "QUEUE_ENQUEUED", `Job persisted for update_id ${updateId}`);
+        scheduleTelegramQueueProcessor(traceId, cache);
+
+        logTrace(traceId, "REQ_COMPLETE", `Request ACKed in ${Date.now() - reqStart}ms (Status: ENQUEUED)`);
         return ContentService.createTextOutput("OK");
 
     } catch (error) {
@@ -377,6 +412,72 @@ function handleTelegramWebhook(e) {
             stack: error.stack || null
         });
         return ContentService.createTextOutput("OK");
+    }
+}
+
+/**
+ * Time-based trigger entrypoint: drain the job queue outside the webhook request.
+ * Serialized with a script lock so only one processor runs at a time.
+ */
+function processTelegramQueue() {
+    const traceId = generateTraceId();
+    const runStart = Date.now();
+    let lock = null;
+    const cache = (typeof CacheService !== 'undefined' && CacheService.getScriptCache)
+        ? CacheService.getScriptCache()
+        : null;
+
+    try {
+        logTrace(traceId, "QUEUE_RUN_START", "Queue processor started");
+
+        // Allow webhooks arriving from now on to schedule a follow-up run
+        if (cache) cache.remove(TG_QUEUE_SCHEDULED_KEY);
+
+        if (typeof LockService !== 'undefined' && LockService.getScriptLock) {
+            lock = LockService.getScriptLock();
+            const lockStart = Date.now();
+            const acquired = lock.tryLock(30000);
+            logTrace(traceId, "LOCK_ACQUIRED", `Script lock acquired: ${acquired} (in ${Date.now() - lockStart}ms)`);
+            if (!acquired) {
+                // Another processor owns the queue; it will drain our jobs too
+                lock = null;
+                logTrace(traceId, "QUEUE_RUN_SKIP", "Another processor is running, exiting");
+                return;
+            }
+        }
+
+        let processed = 0;
+        let budgetExceeded = false;
+        while (true) {
+            const jobs = listTelegramJobs();
+            if (jobs.length === 0) break;
+            logTrace(traceId, "QUEUE_BATCH", `Draining ${jobs.length} pending job(s)`);
+
+            for (const job of jobs) {
+                if (Date.now() - runStart > TG_PROCESSOR_TIME_BUDGET_MS) {
+                    budgetExceeded = true;
+                    break;
+                }
+                // Delete before processing: losing a job on crash is preferable to sending it twice
+                deleteTelegramJob(job.updateId);
+                processTelegramJob(job);
+                processed++;
+            }
+            if (budgetExceeded) break;
+        }
+
+        // Clean up fired triggers (Apps Script keeps them around; 20-trigger limit per script)
+        const removed = deleteTelegramQueueTriggers();
+        logTrace(traceId, "QUEUE_TRIGGERS_CLEANED", `Removed ${removed} processor trigger(s)`);
+
+        // Re-arm if work is still pending (time budget hit, or a job slipped in during cleanup)
+        if (budgetExceeded || listTelegramJobs().length > 0) {
+            scheduleTelegramQueueProcessor(traceId, cache);
+        }
+
+        logTrace(traceId, "QUEUE_RUN_COMPLETE", `Processed ${processed} job(s) in ${Date.now() - runStart}ms`);
+    } catch (error) {
+        logTrace(traceId, "QUEUE_RUN_ERROR", `Fatal error in queue processor: ${error.toString()}`, { stack: error.stack || null });
     } finally {
         if (lock) {
             try {
@@ -384,6 +485,70 @@ function handleTelegramWebhook(e) {
                 logTrace(traceId, "LOCK_RELEASED", "Script lock released successfully");
             } catch (e) {}
         }
+    }
+}
+
+/**
+ * Execute one queued job end-to-end: command / AI rule / sheet query / reply.
+ * Reuses the job's webhook traceId so logs form a single end-to-end trace.
+ */
+function processTelegramJob(job) {
+    const traceId = job.traceId || generateTraceId();
+    const jobStart = Date.now();
+    const text = job.text || "";
+
+    try {
+        logTrace(traceId, "JOB_START", `Processing job for update_id ${job.updateId} (queued ${jobStart - (job.enqueuedAt || jobStart)}ms ago)`, { text });
+
+        if (text === "/start" || text === "/help") {
+            logTrace(traceId, "COMMAND_HELP", `Executing help command: ${text}`);
+            sendTelegramMessage("👋 <b>Xin chào!</b>\n\nHãy gửi câu hỏi tìm kiếm theo ngôn ngữ tự nhiên, ví dụ:\n- <i>giá dưới 500k ở Hà Nội 2k5</i>\n- <i>khu vực Sài Gòn vòng 1 trên 90</i>\n- <i>tìm bài active quanh Cầu Giấy</i>", traceId);
+            logTrace(traceId, "JOB_COMPLETE", `Job completed in ${Date.now() - jobStart}ms (Status: HELP_COMMAND_SERVED)`);
+            return;
+        }
+
+        logTrace(traceId, "QUERY_START", `Processing natural language query: "${text}"`);
+        const ruleJson = typeof makeTheRule === 'function' ? makeTheRule(text, false, traceId) : null;
+        if (!ruleJson) {
+            logTrace(traceId, "QUERY_FAILED_RULE", "Unable to generate rule from AI, sending fallback message");
+            sendTelegramMessage("❌ Không thể phân tích điều kiện từ câu hỏi này. Bạn hãy thử viết ngắn gọn hơn nhé (Ví dụ: <i>hà nội dưới 500k 2k5</i>).", traceId);
+            logTrace(traceId, "JOB_COMPLETE", `Job completed in ${Date.now() - jobStart}ms (Status: NO_AI_RULE)`);
+            return;
+        }
+
+        let parsedRule;
+        try {
+            parsedRule = JSON.parse(ruleJson);
+            logTrace(traceId, "RULE_PARSED", "Successfully parsed rule JSON", parsedRule);
+        } catch (parseErr) {
+            logTrace(traceId, "RULE_PARSE_ERROR", `JSON Parse Error on rule: ${parseErr.toString()}`, { rawRule: ruleJson });
+            sendTelegramMessage("❌ Lỗi phân tích cú pháp điều kiện từ AI. Vui lòng thử lại.", traceId);
+            logTrace(traceId, "JOB_COMPLETE", `Job completed in ${Date.now() - jobStart}ms (Status: PARSE_ERROR)`);
+            return;
+        }
+
+        const sheetName = typeof getSheetName === 'function' ? getSheetName() : "AllData";
+        logTrace(traceId, "SHEET_QUERY_START", `Querying sheet "${sheetName}" with rule`);
+
+        const queryStart = Date.now();
+        const result = typeof DataQuery !== 'undefined'
+            ? DataQuery.fromSheet(sheetName).applyRule(parsedRule).execute()
+            : [];
+        logTrace(traceId, "SHEET_QUERY_DONE", `Sheet query finished in ${Date.now() - queryStart}ms, found ${result ? result.length : 0} matching record(s)`);
+
+        if (!result || result.length === 0) {
+            logTrace(traceId, "NO_RESULTS", "0 matching records found for rule");
+            sendTelegramMessage("❌ Không tìm thấy dữ liệu phù hợp với điều kiện của bạn.", traceId);
+            logTrace(traceId, "JOB_COMPLETE", `Job completed in ${Date.now() - jobStart}ms (Status: ZERO_MATCH)`);
+            return;
+        }
+
+        sendResultData(result, traceId);
+        logTrace(traceId, "JOB_COMPLETE", `Job completed in ${Date.now() - jobStart}ms (Status: RESULTS_DELIVERED)`);
+    } catch (error) {
+        logTrace(traceId, "JOB_ERROR", `Fatal error processing job in ${Date.now() - jobStart}ms: ${error.toString()}`, {
+            stack: error.stack || null
+        });
     }
 }
 
@@ -585,7 +750,7 @@ function checkTelegramWebhookStatus() {
 /**
  * Register Webhook URL to Telegram Bot API
  */
-function setWebhook(customUrl) {
+function setWebhook(customUrl, dropPendingUpdates = false) {
     const traceId = generateTraceId();
     const token = getTelegramApiKey() || TELEGRAM_BOT_TOKEN;
     const targetUrl = customUrl || getDeployedUrl() || DEPLOYED_URL;
@@ -603,8 +768,12 @@ function setWebhook(customUrl) {
     }
 
     const url = "https://api.telegram.org/bot" + token + "/setWebhook";
+    // max_connections=1: Telegram delivers updates sequentially, so retries cannot overlap.
+    // drop_pending_updates: one-shot flush of a retry backlog accumulated by a slow webhook.
     const payload = {
         url: targetUrl,
+        max_connections: 1,
+        drop_pending_updates: !!dropPendingUpdates,
     };
 
     const options = {
@@ -700,6 +869,12 @@ if (typeof module !== 'undefined' && module.exports) {
         sendResultData,
         sendTelegramMessage,
         handleTelegramWebhook,
+        processTelegramQueue,
+        processTelegramJob,
+        enqueueTelegramJob,
+        listTelegramJobs,
+        scheduleTelegramQueueProcessor,
+        deleteTelegramQueueTriggers,
         getTelegramDiagnostics,
         checkTelegramConnection,
         promptTestTelegramConnection,

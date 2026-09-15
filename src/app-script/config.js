@@ -58,3 +58,26 @@ const CLOUDFLARE_API_TOKEN = getCloudflareApiToken();
 const CLOUDFLARE_MODEL = getCloudflareModel();
 const SPREADSHEET_ID = getSpreadsheetId();
 const DEPLOYED_URL = getDeployedUrl();
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        getConfig,
+        setConfig,
+        getGeminiApiKey,
+        getTelegramApiKey,
+        getTelegramChatId,
+        getSpreadsheetId,
+        getDeployedUrl,
+        setDeployedUrl,
+        getCloudflareAccountId,
+        getCloudflareApiToken,
+        getCloudflareModel,
+        TELEGRAM_BOT_TOKEN,
+        TELEGRAM_CHAT_ID,
+        GEMINI_API_KEY,
+        CLOUDFLARE_ACCOUNT_ID,
+        CLOUDFLARE_API_TOKEN,
+        CLOUDFLARE_MODEL,
+        SPREADSHEET_ID,
+        DEPLOYED_URL
+    };
+}

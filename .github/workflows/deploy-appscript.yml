@@ -80,7 +80,7 @@ jobs:
             echo "Setting Telegram Webhook to: $WEBHOOK_URL"
             RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
               -H "Content-Type: application/json" \
-              -d "{\"url\": \"${WEBHOOK_URL}\"}")
+              -d "{\"url\": \"${WEBHOOK_URL}\", \"max_connections\": 1}")
             echo "Telegram API Response: $RESPONSE"
           else
             echo "⚠️ Could not determine DEPLOYMENT_ID to call setWebhook."

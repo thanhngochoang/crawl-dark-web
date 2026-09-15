@@ -10,7 +10,8 @@ Khi làm việc với các file trong thư mục `src/app-script/`, tuân thủ 
    - Tất cả inline comments `//`, block comments `/* ... */`, và JSDoc `/** ... */` trong mã nguồn BẮT BUỘC PHẢI VIẾT BẰNG TIẾNG ANH.
 
 3. **QUY TẮC BẮT BUỘC: Toàn bộ xử lý Telegram nằm trong `telegram.js`**:
-   - Mọi logic liên quan đến Telegram (xử lý webhook request `handleTelegramWebhook(e)`, xác thực chat ID, deduplication cache, khóa `LockService`, parse lệnh `/start`/`/help`, format HTML message, gửi tin nhắn, diagnostics, check connection, prompt menu UI) **PHẢI ĐƯỢC ĐẶT TRONG `telegram.js`**.
+   - Mọi logic liên quan đến Telegram (xử lý webhook request `handleTelegramWebhook(e)`, xác thực chat ID, deduplication cache, job queue + trigger processor `processTelegramQueue()`, khóa `LockService`, parse lệnh `/start`/`/help`, format HTML message, gửi tin nhắn, diagnostics, check connection, prompt menu UI) **PHẢI ĐƯỢC ĐẶT TRONG `telegram.js`**.
+   - Webhook chỉ dedup + enqueue + trả `OK` ngay; KHÔNG gọi AI / đọc Sheet / gửi tin trong `doPost` (Telegram sẽ retry và gây trùng tin nhắn).
    - `apps-script.js` chỉ là thin entrypoint tiếp nhận `doPost` (gọi `handleTelegramWebhook`), `doGet` (gọi `getTelegramDiagnostics`), và khai báo menu `onOpen`.
 
 4. **Global Scope & Runtime V8**:

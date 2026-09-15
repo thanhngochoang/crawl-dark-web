@@ -106,19 +106,31 @@ Thư mục gốc của Apps Script là `src/app-script/` (được cấu hình t
 
 ## 7. Xử lý Webhook, Concurrency & Idempotency (trong `telegram.js`)
 
-1. **LockService chống Race Conditions**:
-   - Trong `handleTelegramWebhook(e)`, luôn sử dụng `LockService.getScriptLock()` với thời gian chờ hợp lý (ví dụ: 15s) để ngăn chặn xử lý đồng thời khi Telegram gửi retry.
+> [!IMPORTANT]
+> Telegram gửi lại (retry) cùng một `update_id` mỗi khi webhook không trả 2xx đủ nhanh. Vì vậy **webhook KHÔNG được xử lý nghiệp vụ nặng**; mọi xử lý AI / đọc Sheet / gửi tin phải chạy ngoài request HTTP.
+
+1. **Kiến trúc Queue + Trigger (ACK-first)**:
+   - `handleTelegramWebhook(e)` chỉ làm: parse payload → dedup → xác thực Chat ID → `enqueueTelegramJob(job)` (lưu vào Script Properties key `TG_JOB_<update_id>`) → `scheduleTelegramQueueProcessor()` → trả `OK` ngay (< 1s).
+   - `processTelegramQueue()` là entrypoint của time-based trigger (`ScriptApp.newTrigger(...).timeBased().after(1000)`), chạy toàn bộ phần nặng qua `processTelegramJob(job)` và xóa trigger đã bắn khi hoàn tất (giới hạn 20 trigger/script).
+   - Chỉ tạo trigger mới khi chưa có trigger đang chờ (cờ `TG_QUEUE_SCHEDULED` trong CacheService, được processor xóa khi bắt đầu chạy).
+   - Job được **xóa trước khi xử lý**: mất một job khi crash chấp nhận được, gửi trùng thì không.
+
+2. **LockService chống Race Conditions**:
+   - Lock đặt trong `processTelegramQueue()` (không phải trong webhook). Nếu `tryLock` thất bại → thoát ngay, processor đang chạy sẽ xử lý nốt các job còn lại.
    - Luôn giải phóng lock trong block `finally`.
 
-2. **Chống lặp tin nhắn (Deduplication)**:
-   - Sử dụng `CacheService.getScriptCache()` với TTL thích hợp (ví dụ 600s / 10 phút) để lưu cache key theo `update_id`, `message_id`, hoặc query hash.
-   - Nếu phát hiện trùng, ghi log trace và trả về `ContentService.createTextOutput("OK")` ngay lập tức.
+3. **Chống lặp tin nhắn (Deduplication)**:
+   - Dedup **trước** mọi thao tác khác, theo `update_id` (`TG_UPD_*`) và `message_id` (`TG_MSG_*`) trong CacheService TTL 600s, kết hợp kiểm tra job đang chờ trong Script Properties.
+   - Bỏ qua `edited_message` — người dùng sửa tin nhắn không được xem là truy vấn mới.
+   - Nếu phát hiện trùng, ghi log `DEDUP_SKIPPED` và trả về `ContentService.createTextOutput("OK")` ngay lập tức.
 
-3. **Phản hồi Webhook nhanh**:
-   - Luôn phản hồi HTTP 200 `OK` trong thời gian ngắn nhất có thể để Telegram không đánh dấu timeout và retry liên tục.
+4. **Cấu hình Webhook**:
+   - `setWebhook` luôn gửi `max_connections: 1` để Telegram giao update tuần tự; tham số `dropPendingUpdates=true` dùng một lần để xả backlog retry cũ.
 
-4. **Xác thực bảo mật Chat ID**:
-   - Kiểm tra `incomingChatId === expectedChatId` trước khi thực hiện các tác vụ truy vấn dữ liệu nhạy cảm.
+5. **Xác thực bảo mật Chat ID**:
+   - Kiểm tra `incomingChatId === expectedChatId` tại webhook, trước khi enqueue.
+
+6. **Trace stages bổ sung**: `QUEUE_ENQUEUED`, `QUEUE_SCHEDULED` / `QUEUE_SCHEDULE_SKIP`, `QUEUE_RUN_START` / `QUEUE_BATCH` / `QUEUE_TRIGGERS_CLEANED` / `QUEUE_RUN_COMPLETE`, `JOB_START` / `JOB_COMPLETE` / `JOB_ERROR`. Job giữ nguyên `traceId` của webhook để log xuyên suốt một request.
 
 ---
 
