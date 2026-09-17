@@ -255,6 +255,10 @@ const TG_QUEUE_SCHEDULED_KEY = "TG_QUEUE_SCHEDULED";
 const TG_QUEUE_PROCESSOR_FN = "processTelegramQueue";
 const TG_DEDUP_TTL_SECONDS = 600;
 const TG_PROCESSOR_TIME_BUDGET_MS = 4.5 * 60 * 1000;
+// Jobs older than this are dropped: answering a query hours later is worse than not answering
+const TG_JOB_MAX_AGE_MS = 30 * 60 * 1000;
+// Inline fallback runs inside the webhook request: keep it short so Telegram does not time out
+const TG_INLINE_TIME_BUDGET_MS = 40 * 1000;
 
 /**
  * Persist a webhook job so the trigger-based processor can pick it up
@@ -286,6 +290,37 @@ function deleteTelegramJob(updateId) {
 }
 
 /**
+ * Drain pending jobs in delivery order. Shared by the trigger processor and the
+ * inline webhook fallback. Returns { processed, budgetExceeded }.
+ */
+function drainTelegramJobs(traceId, runStart, budgetMs) {
+    let processed = 0;
+    let budgetExceeded = false;
+    while (true) {
+        const jobs = listTelegramJobs();
+        if (jobs.length === 0) break;
+        logTrace(traceId, "QUEUE_BATCH", `Draining ${jobs.length} pending job(s)`);
+
+        for (const job of jobs) {
+            if (Date.now() - runStart > budgetMs) {
+                budgetExceeded = true;
+                break;
+            }
+            // Delete before processing: losing a job on crash is preferable to sending it twice
+            deleteTelegramJob(job.updateId);
+            if (job.enqueuedAt && Date.now() - job.enqueuedAt > TG_JOB_MAX_AGE_MS) {
+                logTrace(job.traceId || traceId, "JOB_EXPIRED", `Dropping stale job for update_id ${job.updateId} (age ${Math.round((Date.now() - job.enqueuedAt) / 60000)} min)`, { text: job.text });
+                continue;
+            }
+            processTelegramJob(job);
+            processed++;
+        }
+        if (budgetExceeded) break;
+    }
+    return { processed, budgetExceeded };
+}
+
+/**
  * Schedule the queue processor trigger unless one is already pending.
  * The pending flag is cleared by the processor when it starts, so any update
  * arriving while it runs schedules a fresh trigger.
@@ -299,7 +334,13 @@ function scheduleTelegramQueueProcessor(traceId, cache) {
         logTrace(traceId, "QUEUE_SCHEDULE_ERROR", "ScriptApp triggers unavailable in this runtime");
         return false;
     }
-    ScriptApp.newTrigger(TG_QUEUE_PROCESSOR_FN).timeBased().after(1000).create();
+    try {
+        ScriptApp.newTrigger(TG_QUEUE_PROCESSOR_FN).timeBased().after(1000).create();
+    } catch (error) {
+        // Typically a missing script.scriptapp authorization: the owner must re-authorize the script
+        logTrace(traceId, "QUEUE_SCHEDULE_ERROR", `Cannot create processor trigger: ${error.toString()}`);
+        return false;
+    }
     if (cache) cache.put(TG_QUEUE_SCHEDULED_KEY, "1", 120);
     logTrace(traceId, "QUEUE_SCHEDULED", "Processor trigger created (fires in ~1s)");
     return true;
@@ -417,7 +458,7 @@ function handleTelegramWebhook(e) {
         }
 
         // 3. Persist the job and hand off to the trigger-based processor
-        enqueueTelegramJob({
+        const job = {
             updateId: updateId,
             messageId: messageId,
             chatId: incomingChatId,
@@ -425,9 +466,20 @@ function handleTelegramWebhook(e) {
             text: text,
             traceId: traceId,
             enqueuedAt: Date.now()
-        });
+        };
+        enqueueTelegramJob(job);
         logTrace(traceId, "QUEUE_ENQUEUED", `Job persisted for update_id ${updateId}`);
-        scheduleTelegramQueueProcessor(traceId, cache);
+        const scheduled = scheduleTelegramQueueProcessor(traceId, cache);
+        const pendingFlag = cache && cache.get(TG_QUEUE_SCHEDULED_KEY);
+
+        if (!scheduled && !pendingFlag) {
+            // No processor will run: answer inline rather than swallow the message.
+            // Slower ACK (Telegram may retry, dedup handles it) beats silence.
+            logTrace(traceId, "QUEUE_INLINE_FALLBACK", "Trigger unavailable, draining queue inline in webhook");
+            const { processed } = drainTelegramJobs(traceId, reqStart, TG_INLINE_TIME_BUDGET_MS);
+            logTrace(traceId, "REQ_COMPLETE", `Request completed in ${Date.now() - reqStart}ms (Status: PROCESSED_INLINE, jobs: ${processed})`);
+            return ContentService.createTextOutput("OK");
+        }
 
         logTrace(traceId, "REQ_COMPLETE", `Request ACKed in ${Date.now() - reqStart}ms (Status: ENQUEUED)`);
         return ContentService.createTextOutput("OK");
@@ -471,25 +523,7 @@ function processTelegramQueue() {
             }
         }
 
-        let processed = 0;
-        let budgetExceeded = false;
-        while (true) {
-            const jobs = listTelegramJobs();
-            if (jobs.length === 0) break;
-            logTrace(traceId, "QUEUE_BATCH", `Draining ${jobs.length} pending job(s)`);
-
-            for (const job of jobs) {
-                if (Date.now() - runStart > TG_PROCESSOR_TIME_BUDGET_MS) {
-                    budgetExceeded = true;
-                    break;
-                }
-                // Delete before processing: losing a job on crash is preferable to sending it twice
-                deleteTelegramJob(job.updateId);
-                processTelegramJob(job);
-                processed++;
-            }
-            if (budgetExceeded) break;
-        }
+        const { processed, budgetExceeded } = drainTelegramJobs(traceId, runStart, TG_PROCESSOR_TIME_BUDGET_MS);
 
         // Clean up fired triggers (Apps Script keeps them around; 20-trigger limit per script)
         const removed = deleteTelegramQueueTriggers();

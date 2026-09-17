@@ -115,6 +115,10 @@ Thư mục gốc của Apps Script là `src/app-script/` (được cấu hình t
    - `processTelegramQueue()` là entrypoint của time-based trigger (`ScriptApp.newTrigger(...).timeBased().after(1000)`), chạy toàn bộ phần nặng qua `processTelegramJob(job)` và xóa trigger đã bắn khi hoàn tất (giới hạn 20 trigger/script).
    - Chỉ tạo trigger mới khi chưa có trigger đang chờ (cờ `TG_QUEUE_SCHEDULED` trong CacheService, được processor xóa khi bắt đầu chạy).
    - Job được **xóa trước khi xử lý**: mất một job khi crash chấp nhận được, gửi trùng thì không.
+   - Job cũ hơn `TG_JOB_MAX_AGE_MS` (30 phút) bị bỏ qua với log `JOB_EXPIRED`, tránh trả lời tin nhắn từ nhiều giờ trước.
+   - **Inline fallback**: nếu không tạo được trigger (`QUEUE_SCHEDULE_ERROR`, thường do thiếu quyền `script.scriptapp`), webhook tự drain hàng đợi ngay trong request (`QUEUE_INLINE_FALLBACK`, budget 40s) thay vì nuốt tin nhắn im lặng.
+   - `appsscript.json` khai báo `oauthScopes` tường minh (spreadsheets, script.external_request, script.scriptapp, script.container.ui). Khi thêm service mới cần scope mới, owner phải chạy lại một hàm trong editor để cấp quyền, nếu không Web App sẽ lỗi quyền im lặng.
+   - Debug từ xa: `doGet` (diagnostics) trả thêm `pendingJobs`, `queueTriggers` và `recentTraces` (60 dòng trace gần nhất lưu trong CacheService).
 
 2. **LockService chống Race Conditions**:
    - Lock đặt trong `processTelegramQueue()` (không phải trong webhook). Nếu `tryLock` thất bại → thoát ngay, processor đang chạy sẽ xử lý nốt các job còn lại.

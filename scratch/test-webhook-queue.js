@@ -129,6 +129,37 @@ tg.handleTelegramWebhook(badEvt);
 assert.strictEqual(Object.keys(store).filter(k => k.startsWith('TG_JOB_')).length, 0, 'no job for foreign chat');
 console.log('✔ Auth still enforced.');
 
+// 7. Trigger creation fails (e.g. missing script.scriptapp authorization): webhook must
+//    process the job inline instead of silently swallowing the message
+console.log('\n7. Trigger creation failure falls back to inline processing...');
+fetchCalls = [];
+delete cacheStore['TG_QUEUE_SCHEDULED'];
+const okNewTrigger = global.ScriptApp.newTrigger;
+global.ScriptApp.newTrigger = () => { throw new Error('You do not have permission to call ScriptApp.newTrigger'); };
+store['TG_JOB_2999'] = JSON.stringify({ updateId: 2999, text: 'hà nội dưới 500k', chatId: '123', traceId: 't', enqueuedAt: Date.now() - 2 * 60 * 60 * 1000 });
+store['TG_JOB_3000'] = JSON.stringify({ updateId: 3000, text: '/help', chatId: '123', traceId: 't', enqueuedAt: Date.now() - 1000 });
+const res7 = tg.handleTelegramWebhook(makeEvent(3001, 'hà nội dưới 500k'));
+global.ScriptApp.newTrigger = okNewTrigger;
+assert.strictEqual(res7.text, 'OK', 'still ACKs Telegram');
+const sent7 = fetchCalls.filter(c => c.url.includes('/sendMessage'));
+assert.strictEqual(sent7.length, 2, `expected inline reply for the fresh backlog job and the new one, got ${sent7.length}`);
+assert.ok(sent7[0].payload.text.includes('Xin chào'), 'fresh backlog job (/help) answered first');
+assert.ok(sent7[1].payload.text.includes('0901111111'), 'new update answered after the backlog');
+assert.strictEqual(Object.keys(store).filter(k => k.startsWith('TG_JOB_')).length, 0, 'queue fully drained, stale job dropped');
+console.log('✔ Inline fallback works when triggers are unavailable.');
+
+// 8. Jobs older than the staleness limit are dropped, not answered days later
+console.log('\n8. Stale jobs are dropped by the processor...');
+fetchCalls = [];
+store['TG_JOB_4001'] = JSON.stringify({ updateId: 4001, text: 'hà nội dưới 500k', chatId: '123', traceId: 't', enqueuedAt: Date.now() - 2 * 60 * 60 * 1000 });
+store['TG_JOB_4002'] = JSON.stringify({ updateId: 4002, text: '/help', chatId: '123', traceId: 't', enqueuedAt: Date.now() - 1000 });
+tg.processTelegramQueue();
+const sent8 = fetchCalls.filter(c => c.url.includes('/sendMessage'));
+assert.strictEqual(sent8.length, 1, `expected only the fresh job to be answered, got ${sent8.length}`);
+assert.ok(sent8[0].payload.text.includes('Xin chào'), 'fresh /help job answered');
+assert.strictEqual(Object.keys(store).filter(k => k.startsWith('TG_JOB_')).length, 0, 'stale job removed from queue');
+console.log('✔ Stale jobs dropped.');
+
 console.log('\n======================================================');
 console.log('✅ ALL WEBHOOK QUEUE TESTS PASSED ✅');
 console.log('======================================================');
