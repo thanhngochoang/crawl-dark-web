@@ -1,10 +1,44 @@
 /**
  * Structured trace logger for end-to-end request lifecycle visibility
  */
+const TG_TRACE_RING_KEY = "TG_TRACE_RING";
+const TG_TRACE_RING_SIZE = 60;
+
 function logTrace(traceId, stage, message, meta = null) {
     const timestamp = new Date().toISOString();
     const metaStr = meta ? (" | Data: " + (typeof meta === 'object' ? JSON.stringify(meta) : String(meta))) : "";
-    Logger.log(`[TRACE][${timestamp}][${traceId || "NO_TRACE_ID"}][${stage}] ${message}${metaStr}`);
+    const line = `[TRACE][${timestamp}][${traceId || "NO_TRACE_ID"}][${stage}] ${message}${metaStr}`;
+    Logger.log(line);
+    appendTraceRing(line);
+}
+
+/**
+ * Keep the last N trace lines in CacheService so diagnostics (doGet) can expose them.
+ * Anonymous web-app executions are hard to inspect otherwise. Best effort, never throws.
+ */
+function appendTraceRing(line) {
+    if (typeof CacheService === 'undefined' || !CacheService.getScriptCache) return;
+    try {
+        const cache = CacheService.getScriptCache();
+        let ring = [];
+        const raw = cache.get(TG_TRACE_RING_KEY);
+        if (raw) { try { ring = JSON.parse(raw) || []; } catch (e) { ring = []; } }
+        ring.push(line.length > 600 ? line.slice(0, 600) + "…" : line);
+        if (ring.length > TG_TRACE_RING_SIZE) ring = ring.slice(ring.length - TG_TRACE_RING_SIZE);
+        cache.put(TG_TRACE_RING_KEY, JSON.stringify(ring), 21600);
+    } catch (e) {
+        // ignore cache failures
+    }
+}
+
+function readTraceRing() {
+    if (typeof CacheService === 'undefined' || !CacheService.getScriptCache) return [];
+    try {
+        const raw = CacheService.getScriptCache().get(TG_TRACE_RING_KEY);
+        return raw ? (JSON.parse(raw) || []) : [];
+    } catch (e) {
+        return [];
+    }
 }
 
 /**
@@ -570,7 +604,10 @@ function getTelegramDiagnostics(traceId = null) {
             SPREADSHEET_ID: spreadsheetId ? spreadsheetId : "MISSING ❌",
             DEPLOYED_URL: deployedUrl ? deployedUrl : "Not set in properties"
         },
-        telegramWebhookStatus: webhookInfo
+        telegramWebhookStatus: webhookInfo,
+        pendingJobs: (() => { try { return listTelegramJobs().map(j => ({ updateId: j.updateId, text: j.text, enqueuedAt: j.enqueuedAt })); } catch (e) { return String(e); } })(),
+        queueTriggers: (() => { try { return (typeof ScriptApp !== 'undefined') ? ScriptApp.getProjectTriggers().map(t => t.getHandlerFunction()) : []; } catch (e) { return String(e); } })(),
+        recentTraces: readTraceRing()
     };
 
     logTrace(traceId, "DIAGNOSTICS_COMPLETE", "Diagnostics completed", report);
