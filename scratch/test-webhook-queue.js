@@ -55,7 +55,7 @@ const tg = require('../src/app-script/telegram.js');
 Object.assign(global, tg);
 
 // AI + sheet stubs: return one matching record
-global.makeTheRule = () => JSON.stringify({ logic: 'and', filters: [] });
+global.resolveRule = () => ({ rule: { logic: 'and', filters: [] }, source: 'ai' });
 global.getSheetData = () => [{ 'Số điện thoại': '0901111111', 'Giá': '500k', 'Khu Vực': 'Cầu Giấy' }];
 global.getSheetName = () => 'AllData';
 

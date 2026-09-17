@@ -37,7 +37,8 @@ assert.ok(formatted.includes("<code>0901234567</code>"), "Phone must be in <code
 assert.ok(formatted.includes("500k"), "Includes price");
 assert.ok(formatted.includes("NS: 2002"), "Includes birth year");
 assert.ok(formatted.includes("1m65, 48kg"), "Includes height/weight");
-assert.ok(formatted.includes("V1: 92"), "Includes bust size");
+assert.ok(!formatted.includes("V1"), "Bust size must not be shown");
+assert.ok(!formatted.includes("92"), "No measurement value leaks into the line");
 console.log("✔ formatResultItem passed.");
 
 // Test 3: buildResultMessages with 50 items across multiple areas

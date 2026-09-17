@@ -14,6 +14,7 @@ Thư mục gốc của Apps Script là `src/app-script/` (được cấu hình t
 | `telegram.js` | **Toàn bộ xử lý Telegram & Logging Trace**: Webhook update processing (`handleTelegramWebhook`), trace logging (`logTrace`, `generateTraceId`), chống lặp (CacheService), chống race condition (LockService), kiểm tra Chat ID, xử lý lệnh `/start`, `/help`, format HTML message (tap-to-copy, phân trang <= 3800 chars), gửi tin nhắn, setup/remove webhook, và các UI prompts kết nối Telegram. |
 | `config.js` | Quản trị tập trung Script Properties (`PropertiesService`), helper getters/setters cho secrets & config. |
 | `helper.js` | Prompt builder, tích hợp AI Query Engine (Cloudflare Workers AI & Gemini AI fallback) có gắn kèm `traceId`. |
+| `rule-parser.js` | Parser rule-based thuần regex (không AI): `parseRuleLocal(text)` chuyển câu tiếng Việt ngắn thành JSON rule cùng schema với AI. Dùng làm fallback cuối khi AI không trả về / trả JSON hỏng. |
 | `filter.js` | Xử lý dữ liệu in-memory, `DataQuery` class, chuẩn hóa text/unicode, coerce number, caching. |
 | `sheet.js` | Tương tác đọc dữ liệu từ Spreadsheet, parser các cột (`Giá`, `Năm Sinh`, `Số đồ 3 vòng`,...). |
 | `appsscript.json` | GAS Project Manifest (V8 runtime, OAuth scopes, timezone, Web App settings). |
@@ -171,8 +172,16 @@ Thư mục gốc của Apps Script là `src/app-script/` (được cấu hình t
      aiResponse = aiResponse.replace(/```json\s*/gi, "").replace(/```\s*/gi, "").trim();
      ```
 
-3. **Fallback Strategy**:
-   - Thứ tự ưu tiên AI: Cloudflare Workers AI -> Google Gemini AI -> Thông báo lỗi thân thiện cho người dùng.
+3. **Fallback Strategy** (`resolveRule(query, traceId)` trong `helper.js`):
+   - Thứ tự ưu tiên: Cloudflare Workers AI -> Google Gemini AI -> `parseRuleLocal` (rule-based, `rule-parser.js`) -> Thông báo lỗi thân thiện cho người dùng.
+   - `telegram.js` chỉ gọi `resolveRule`, không tự `JSON.parse` response AI. Kết quả trả về `{ rule, source: 'ai' | 'local' }` hoặc `null`.
+   - Trace stages: `RULE_PARSED` (AI JSON hợp lệ), `RULE_PARSE_ERROR` (AI trả JSON hỏng, chuyển sang local), `RULE_LOCAL_FALLBACK`, `RULE_LOCAL_FAILED`.
+
+4. **Local rule parser (`rule-parser.js`)**:
+   - Chuẩn hoá text bằng `normalizeText` (bỏ dấu, lowercase) rồi chạy lần lượt các matcher; mỗi matcher xoá phần đã khớp để matcher sau không bắt trùng.
+   - Thứ tự matcher: năm sinh/tuổi (`2k5`, `9x`, `dưới 25 tuổi`) -> số đo (`1m65`, `50kg`, `vòng 1 trên 90`) -> trạng thái/lượt xem -> giá (`500k`, `1tr5`, `từ 500k đến 1tr`) -> địa danh (bảng alias `RP_PLACES` + cụm sau từ khoá `ở/quanh/khu vực`).
+   - Nhiều địa danh trong một câu được gom thành nhóm `or`; địa danh luôn kiểm tra cả `Khu Vực` và `Địa chỉ`.
+   - Thêm địa danh/alias mới vào `RP_PLACES`; thêm test tương ứng trong `scratch/test-rule-parser.js` (chạy `node scratch/test-rule-parser.js`).
 
 ---
 

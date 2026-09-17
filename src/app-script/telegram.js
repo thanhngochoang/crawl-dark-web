@@ -70,15 +70,6 @@ function formatResultItem(item) {
         specs.push(`${item["Cân Nặng"]}`);
     }
 
-    if (item["Số đồ 3 vòng"]) {
-        if (typeof item["Số đồ 3 vòng"] === "object") {
-            const v1 = item["Số đồ 3 vòng"].bust;
-            if (v1) specs.push(`V1: ${v1}`);
-        } else {
-            specs.push(String(item["Số đồ 3 vòng"]));
-        }
-    }
-
     const detailStr = specs.length > 0 ? ` | ${specs.map(escapeHtml).join(" | ")}` : "";
     return `• <code>${escapeHtml(phone)}</code>${detailStr}`;
 }
@@ -508,27 +499,18 @@ function processTelegramJob(job) {
         }
 
         logTrace(traceId, "QUERY_START", `Processing natural language query: "${text}"`);
-        const ruleJson = typeof makeTheRule === 'function' ? makeTheRule(text, false, traceId) : null;
-        if (!ruleJson) {
-            logTrace(traceId, "QUERY_FAILED_RULE", "Unable to generate rule from AI, sending fallback message");
+        // AI providers first, then the local rule-based parser (see helper.js resolveRule)
+        const resolved = typeof resolveRule === 'function' ? resolveRule(text, traceId) : null;
+        if (!resolved) {
+            logTrace(traceId, "QUERY_FAILED_RULE", "Neither AI nor local parser produced a rule, sending fallback message");
             sendTelegramMessage("❌ Không thể phân tích điều kiện từ câu hỏi này. Bạn hãy thử viết ngắn gọn hơn nhé (Ví dụ: <i>hà nội dưới 500k 2k5</i>).", traceId);
-            logTrace(traceId, "JOB_COMPLETE", `Job completed in ${Date.now() - jobStart}ms (Status: NO_AI_RULE)`);
+            logTrace(traceId, "JOB_COMPLETE", `Job completed in ${Date.now() - jobStart}ms (Status: NO_RULE)`);
             return;
         }
-
-        let parsedRule;
-        try {
-            parsedRule = JSON.parse(ruleJson);
-            logTrace(traceId, "RULE_PARSED", "Successfully parsed rule JSON", parsedRule);
-        } catch (parseErr) {
-            logTrace(traceId, "RULE_PARSE_ERROR", `JSON Parse Error on rule: ${parseErr.toString()}`, { rawRule: ruleJson });
-            sendTelegramMessage("❌ Lỗi phân tích cú pháp điều kiện từ AI. Vui lòng thử lại.", traceId);
-            logTrace(traceId, "JOB_COMPLETE", `Job completed in ${Date.now() - jobStart}ms (Status: PARSE_ERROR)`);
-            return;
-        }
+        const parsedRule = resolved.rule;
 
         const sheetName = typeof getSheetName === 'function' ? getSheetName() : "AllData";
-        logTrace(traceId, "SHEET_QUERY_START", `Querying sheet "${sheetName}" with rule`);
+        logTrace(traceId, "SHEET_QUERY_START", `Querying sheet "${sheetName}" with rule (source: ${resolved.source})`);
 
         const queryStart = Date.now();
         const result = typeof DataQuery !== 'undefined'

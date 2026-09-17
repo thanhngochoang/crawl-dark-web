@@ -1,6 +1,15 @@
 /**
- * Prompt builder and AI Query Engine integrations (Cloudflare Workers AI & Gemini)
+ * Prompt builder and AI Query Engine integrations (Cloudflare Workers AI & Gemini),
+ * plus the rule-based local fallback (rule-parser.js) used when no AI returns a usable rule.
  */
+
+// rule-parser.js is a global in GAS; under Node it must be required explicitly.
+// Resolved lazily because GAS file load order is not guaranteed.
+function _getLocalRuleParser() {
+    if (typeof parseRuleLocal === 'function') return parseRuleLocal;
+    if (typeof require === 'function') return require('./rule-parser.js').parseRuleLocal;
+    return () => null;
+}
 
 function buildPrompt(query) {
     return `
@@ -329,11 +338,59 @@ function callGemini(prompt, traceId = null) {
     }
 }
 
+/**
+ * Parse an AI response into a rule object. Returns null when the text is not valid JSON
+ * or does not look like a filter rule (no filters array and no field).
+ */
+function parseAiRuleJson(ruleJson) {
+    if (!ruleJson) return null;
+    try {
+        const parsed = JSON.parse(ruleJson);
+        if (!parsed || typeof parsed !== 'object') return null;
+        if (!Array.isArray(parsed.filters) && !parsed.field) return null;
+        return parsed;
+    } catch (e) {
+        return null;
+    }
+}
+
+/**
+ * Resolve a natural-language query into a rule object.
+ * Order: AI providers (Cloudflare -> Gemini) -> local rule-based parser.
+ * @returns {{rule: object, source: 'ai'|'local'}|null}
+ */
+function resolveRule(query, traceId = null) {
+    const log = (stage, msg, data) => {
+        if (typeof logTrace === 'function') logTrace(traceId, stage, msg, data);
+    };
+
+    const ruleJson = makeTheRule(query, false, traceId);
+    const aiRule = parseAiRuleJson(ruleJson);
+    if (aiRule) {
+        log("RULE_PARSED", "Successfully parsed rule JSON from AI", aiRule);
+        return { rule: aiRule, source: 'ai' };
+    }
+    if (ruleJson) {
+        log("RULE_PARSE_ERROR", "AI response is not a usable JSON rule, trying local parser", { rawRule: ruleJson });
+    }
+
+    const localRule = _getLocalRuleParser()(query);
+    if (localRule) {
+        log("RULE_LOCAL_FALLBACK", "Generated rule using local rule-based parser", localRule);
+        return { rule: localRule, source: 'local' };
+    }
+
+    log("RULE_LOCAL_FAILED", "Local rule-based parser recognised no condition in the query", { query });
+    return null;
+}
+
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
         makeTheRule,
         buildPrompt,
         callCloudflareAI,
-        callGemini
+        callGemini,
+        parseAiRuleJson,
+        resolveRule
     };
 }
